@@ -117,6 +117,23 @@ for i in $(seq 1 $MAX_ITERATIONS); do
     echo "$OUTPUT"
   fi
 
+  # After each iteration, if there is a remote repo configured, push commits.
+  # We push the current branch to origin when possible.
+  if [ -n "$REPO_ROOT" ]; then
+    if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      CURRENT_BRANCH=$(git -C "$REPO_ROOT" branch --show-current 2>/dev/null || echo "")
+      if [ -n "$CURRENT_BRANCH" ] && git -C "$REPO_ROOT" remote get-url origin >/dev/null 2>&1; then
+        # Only push if working tree is clean (avoid pushing partial state).
+        if [ -z "$(git -C "$REPO_ROOT" status --porcelain)" ]; then
+          echo "Attempting to push '$CURRENT_BRANCH' to origin..."
+          git -C "$REPO_ROOT" push -u origin "$CURRENT_BRANCH" || echo "Push failed (will continue)."
+        else
+          echo "Skip push: working tree not clean."
+        fi
+      fi
+    fi
+  fi
+
   # Check for completion signal
   if is_complete_output "$OUTPUT"; then
     echo ""
