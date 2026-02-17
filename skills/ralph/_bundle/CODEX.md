@@ -4,9 +4,10 @@
 
 ## 你的任务（每次迭代只做一条）
 
-1. 读取同目录的 `prd.json`
-2. 读取同目录的 `progress.txt`（先看最上面的 **Codebase Patterns**）
-3. 确认当前 git 分支与 PRD 里的 `branchName` 一致：
+1. 读取 `scripts/ralph/prd.json`
+2. 读取 `scripts/ralph/progress.txt`（先看最上面的 **Codebase Patterns**）
+3. **所有代码改动都在仓库根目录进行**（也就是包含 `.git/` 的目录）。
+4. 确认当前 git 分支与 PRD 里的 `branchName` 一致：
    - 不一致则 `git checkout <branchName>`
    - 分支不存在则从 main/master 创建
 4. 选取 **priority 最小**且 `passes: false` 的 user story
@@ -35,5 +36,9 @@
 如果所有 stories 都 `passes: true`，请在最后输出：
 
 <promise>COMPLETE</promise>
+
+## 重要约束
+- **不要**在 `scripts/ralph/` 下创建 Next.js 项目文件（那里只放 ralph 的配置与进度）。
+- Next.js / Prisma 等项目文件应位于仓库根目录（例如 `app/`、`prisma/`、`package.json` 等）。
 
 否则正常结束（下一次迭代会继续做下一条）。
