@@ -103,8 +103,16 @@ for i in $(seq 1 $MAX_ITERATIONS); do
     OUTPUT=$(claude --dangerously-skip-permissions --print < "$SCRIPT_DIR/CLAUDE.md" 2>&1 | tee /dev/stderr) || true
   else
     # Codex: supports overriding the command via RALPH_CODEX_CMD for local setup differences.
-    # We don't stream raw logs here because Codex can emit verbose intermediary events.
-    CODEX_CMD="${RALPH_CODEX_CMD:-codex exec --full-auto}"
+    # IMPORTANT: run Codex with repo root as workspace (-C) so it can write project files and .git.
+    # Also allow writing the ralph directory via --add-dir.
+    REPO_ROOT=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || echo "")
+    if [ -n "$REPO_ROOT" ]; then
+      DEFAULT_CODEX_CMD="codex exec --full-auto -C \"$REPO_ROOT\" --add-dir \"$SCRIPT_DIR\""
+    else
+      DEFAULT_CODEX_CMD="codex exec --full-auto"
+    fi
+
+    CODEX_CMD="${RALPH_CODEX_CMD:-$DEFAULT_CODEX_CMD}"
     OUTPUT=$(eval "$CODEX_CMD" < "$SCRIPT_DIR/CODEX.md" 2>&1) || true
     echo "$OUTPUT"
   fi
