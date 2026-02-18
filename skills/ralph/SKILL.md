@@ -1,15 +1,14 @@
 ---
 name: ralph
-description: "把 PRD 文本转换成 ralph 的 prd.json，并在指定项目路径里用 Codex CLI 或 Claude Code 跑 ralph.sh 自动迭代实现。每次调用由用户传入 repo 路径。"
+description: "把 PRD 文本转换成 ralph 的 prd.json 并写入指定项目路径。仅负责 PRD→prd.json，不负责执行 ralph.sh（执行由 run-ralph skill 负责）。每次调用由用户传入 repo 路径。"
 user-invocable: true
 ---
 
-# OpenClaw Ralph（PRD → prd.json → 自动迭代）
+# OpenClaw Ralph（PRD → prd.json）
 
-你要做三件事：
+你要做两件事：
 1) 收到用户给的 **PRD 文本**（Markdown 或纯文本）
 2) 在用户指定的项目仓库里生成 `scripts/ralph/prd.json`
-3) 用用户选择的工具（`codex` 或 `claude`）运行 Ralph 循环：`scripts/ralph/ralph.sh --tool ... <max_iterations>`
 
 > 约定：本 skill 自带一份 `ralph.sh / CODEX.md / CLAUDE.md`，运行时拷贝到目标仓库的 `scripts/ralph/`。
 
@@ -18,8 +17,6 @@ user-invocable: true
 ## 需要向用户确认的参数（缺任何一个就先问）
 
 - `repoPath`：目标项目本地路径（必须是 git repo）
-- `tool`：`codex` | `claude`
-- `maxIterations`：默认 10
 - `featureName`：用于生成分支名 `ralph/<feature-name-kebab>`
 - （可选）`projectName`：默认从 repo 目录名推断
 
@@ -77,20 +74,11 @@ user-invocable: true
 
 ---
 
-## 步骤 C：运行 Ralph
+## 执行边界（重要）
 
-在 `<repoPath>/scripts/ralph/` 执行：
-
-- Codex：`./ralph.sh --tool codex <maxIterations>`
-- Claude Code：`./ralph.sh --tool claude <maxIterations>`
-
-运行前建议：
-- `git status` 干净
-- 默认主分支是 `main`（如果是 `master` 也要能识别）
-
-运行后：
-- 如果返回 `COMPLETE`：提示用户已完成
-- 如果未完成：提示用户可继续追加迭代次数或拆分 stories
+`ralph` skill **不执行** `ralph.sh`。当用户要进入迭代开发阶段时：
+- 明确引导用户改用 `run-ralph` skill
+- 或在当前会话中直接切换到 run-ralph 的调度流程
 
 ---
 
@@ -98,6 +86,6 @@ user-invocable: true
 
 用户消息示例：
 
-- “用 ralph 跑一下。repoPath=/path/to/repo tool=codex iterations=10 feature=task-priority。PRD：<粘贴PRD>”
+- “用 ralph 生成 prd.json。repoPath=/path/to/repo feature=task-priority。PRD：<粘贴PRD>”
 
-你要从消息里解析出参数并开始执行。
+你要从消息里解析出参数并开始执行；若用户要求直接迭代实现，转交 `run-ralph` skill。
