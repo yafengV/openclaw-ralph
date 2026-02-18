@@ -73,11 +73,7 @@ user-invocable: true
 
 ### Step 2：先在当前会话汇报“下一条任务”
 
-给当前会话发一条消息（简洁但信息足够）：
-- 本轮编号（iteration k / maxIterations）
-- 将要执行的 story：`[id] title`
-- 1 句 description
-- 关键验收点（列 3-6 条，太长就截断）
+给当前会话发一条消息，必须使用固定格式（见下方“回复格式约束”里的“将进行”段）。
 
 ### Step 3：启动 subagent 执行“单轮 Ralph”
 
@@ -96,10 +92,7 @@ subagent 输出要求：
 
 ### Step 3b：subagent 回调后，主会话汇报
 
-subagent 完成后，主会话对用户发一条“本轮完成情况”消息：
-- 本轮结果：成功/失败
-- 是否产生 commit（hash + message）/ 是否 push（如有 remote）
-- 当前进度 done/total + 下一条 story（若还有）
+subagent 完成后，主会话对用户发一条“本轮完成情况”消息，必须使用固定格式（见下方“回复格式约束”）。
 
 ### Step 3c：自动继续或结束（**不要再问用户“是否继续”**）
 
@@ -127,6 +120,31 @@ subagent 完成后，主会话对用户发一条“本轮完成情况”消息�
 - 当前分支/远程推送状态（如可得）
 - 如何运行/验证（最短指令：dev / build / start）
 - 删除 `run-ralph-state.json`（或写入 `status=completed`），避免下次误恢复
+
+## 回复格式约束（必须遵守）
+
+每次对用户汇报都使用下面结构：
+
+已完成：
+- 完成的 story 信息（`[US-xxx] 标题`）
+- 完成 story 的 subagent sessionKey
+- 结果（`commit` + `done/total`）
+
+将进行：
+- 下一个 story 信息（`[US-yyy] 标题`；若无则写“全部完成”）
+- 下一个 story 的 subagent sessionKey（若尚未启动则写“待启动”；若全部完成则写“-”）
+
+示例：
+```text
+已完成：
+- [US-004] 双语摘要生成
+- sessionKey: agent:main:subagent:xxxx
+- 结果: commit 9afd842, done/total 4/6
+
+将进行：
+- [US-005] 前端语言切换（ZH/EN）
+- sessionKey: agent:main:subagent:yyyy
+```
 
 ## 重要约束
 
