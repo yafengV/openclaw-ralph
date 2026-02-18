@@ -3,7 +3,7 @@
   "name": "OpenClaw Ralph",
   "description": "Ralph (PRD + prd.json + ralph runner) packaged for OpenClaw. Provides the prd and ralph skills.",
   "version": "0.1.0",
-  "skills": ["skills/prd", "skills/ralph"],
+  "skills": ["skills/prd", "skills/ralph", "skills/proj"],
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
