@@ -99,8 +99,11 @@ for i in $(seq 1 $MAX_ITERATIONS); do
   if [[ "$TOOL" == "amp" ]]; then
     OUTPUT=$(cat "$SCRIPT_DIR/prompt.md" | amp --dangerously-allow-all 2>&1 | tee /dev/stderr) || true
   elif [[ "$TOOL" == "claude" ]]; then
-    # Claude Code: use --dangerously-skip-permissions for autonomous operation, --print for output
-    OUTPUT=$(claude --dangerously-skip-permissions --print < "$SCRIPT_DIR/CLAUDE.md" 2>&1 | tee /dev/stderr) || true
+    # Claude Code: run in headless/print mode. Use stream-json + verbose so we can observe progress.
+    # Allow override via RALPH_CLAUDE_ARGS.
+    CLAUDE_ARGS_DEFAULT="--dangerously-skip-permissions --print --verbose --output-format=stream-json --include-partial-messages"
+    CLAUDE_ARGS="${RALPH_CLAUDE_ARGS:-$CLAUDE_ARGS_DEFAULT}"
+    OUTPUT=$(claude $CLAUDE_ARGS < "$SCRIPT_DIR/CLAUDE.md" 2>&1 | tee /dev/stderr) || true
   else
     # Codex: supports overriding the command via RALPH_CODEX_CMD for local setup differences.
     # IMPORTANT: run Codex with repo root as workspace (-C) so it can write project files and .git.
