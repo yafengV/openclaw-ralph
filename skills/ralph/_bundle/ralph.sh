@@ -113,7 +113,7 @@ for i in $(seq 1 $MAX_ITERATIONS); do
     fi
 
     CODEX_CMD="${RALPH_CODEX_CMD:-$DEFAULT_CODEX_CMD}"
-    OUTPUT=$(eval "$CODEX_CMD" < "$SCRIPT_DIR/CODEX.md" 2>&1) || true
+    OUTPUT=$(eval "$CODEX_CMD" < "$SCRIPT_DIR/CODEX.md" 2>&1 | tee /dev/stderr) || true
     echo "$OUTPUT"
   fi
 
