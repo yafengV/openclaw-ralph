@@ -1,0 +1,19 @@
+{
+  "id": "ralph-runner",
+  "name": "Ralph Runner",
+  "description": "Reliable Ralph runner (loop + progress push) without relying on LLM session continuity.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "defaultTool": { "type": "string", "enum": ["codex", "claude"], "default": "codex" },
+      "maxIterationsDefault": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 },
+      "iterationTimeoutSec": { "type": "integer", "minimum": 60, "maximum": 7200, "default": 1800 }
+    }
+  },
+  "uiHints": {
+    "defaultTool": { "label": "Default tool" },
+    "maxIterationsDefault": { "label": "Default maxIterations" },
+    "iterationTimeoutSec": { "label": "Per-iteration timeout (sec)" }
+  }
+}
