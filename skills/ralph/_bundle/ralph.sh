@@ -113,7 +113,9 @@ for i in $(seq 1 $MAX_ITERATIONS); do
     fi
 
     CODEX_CMD="${RALPH_CODEX_CMD:-$DEFAULT_CODEX_CMD}"
-    OUTPUT=$(eval "$CODEX_CMD" < "$SCRIPT_DIR/CODEX.md" 2>&1 | tee /dev/stderr) || true
+    # Codex sandbox may block localhost proxies (e.g. 127.0.0.1:7890). Unset proxy env by default.
+    CODEX_ENV_PREFIX="${RALPH_CODEX_ENV_PREFIX:-env -u http_proxy -u https_proxy -u all_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY}"
+    OUTPUT=$(eval "$CODEX_ENV_PREFIX $CODEX_CMD" < "$SCRIPT_DIR/CODEX.md" 2>&1 | tee /dev/stderr) || true
     echo "$OUTPUT"
   fi
 
