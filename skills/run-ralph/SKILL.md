@@ -8,6 +8,23 @@ user-invocable: true
 
 目标：把 Ralph 的多轮迭代变成**自动循环的回合制调度器**。
 
+## handler.js（强约束入口）
+
+本 skill 内置 `handler.js`，用于把关键步骤程序化，减少“提示词漏执行”的风险。
+
+路径：`skills/run-ralph/handler.js`
+
+主会话应优先使用它来完成三件事：
+1) `inspect`：读取 `prd.json`，稳定算出 `done/total/nextStory`
+2) `save-state/load-state/clear-state`：维护 `run-ralph-state.json`
+3) `report`：按固定格式生成“已完成/将进行”消息
+
+示例：
+- `node skills/run-ralph/handler.js inspect --repoPath <repoPath>`
+- `node skills/run-ralph/handler.js load-state --repoPath <repoPath>`
+- `node skills/run-ralph/handler.js save-state --repoPath <repoPath> --state '{"status":"running"}'`
+- `node skills/run-ralph/handler.js report --completedId US-001 --completedTitle "初始化" --completedSessionKey agent:... --commit abc123 --done 1 --total 6 --nextId US-002 --nextTitle "时间范围" --nextSessionKey agent:...`
+
 - 每一轮只跑 1 次 Ralph（`./ralph.sh ... 1`）
 - **主会话自动循环**：汇报下一条 story → spawn subagent 执行 → 回报结果与总体进度 → 继续下一条
 - 直到：全部完成 / 达到 `maxIterations` / 遇到需要用户确认的阻塞
@@ -132,7 +149,7 @@ subagent 完成后，主会话对用户发一条“本轮完成情况”消息�
 
 将进行：
 - 下一个 story 信息（`[US-yyy] 标题`；若无则写“全部完成”）
-- 下一个 story 的 subagent sessionKey（若尚未启动则写“待启动”；若全部完成则写“-”）
+- 下一个 story 的 subagent sessionKey（必须先启动并填写真实 sessionKey；若全部完成则写“-”）
 
 示例：
 ```text
