@@ -546,8 +546,9 @@ export default function register(api: OpenClawPluginApi) {
     acceptsArgs: true,
     requireAuth: true,
     handler: async (ctx: PluginCommandContext) => {
-      const kv = parseKvArgs(ctx.args ?? "");
-      const jobId = kv.jobId || kv.id || (ctx.args ?? "").trim();
+      const argsStr = typeof ctx.args === "string" ? ctx.args : "";
+      const kv = parseKvArgs(argsStr);
+      const jobId = kv.jobId || kv.id || argsStr.trim();
       if (!jobId) return { text: "缺少 jobId。示例：/ralphcancel jobId=ralph_xxx" };
       if (!jobs.has(jobId)) return { text: `未找到 job：${jobId}` };
       cancels.add(jobId);
