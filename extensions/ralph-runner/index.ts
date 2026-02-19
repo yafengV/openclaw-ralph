@@ -2,7 +2,17 @@ import type { OpenClawPluginApi, PluginCommandContext, PluginToolContext } from 
 import fs from "node:fs";
 import path from "node:path";
 
-const PLUGIN_VERSION = "1.0.2";
+// 从 package.json 动态读取版本号
+let PLUGIN_VERSION = "1.0.3";
+try {
+  const pkgPath = path.join(import.meta.dirname || __dirname, "package.json");
+  const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+  if (pkg.version) {
+    PLUGIN_VERSION = pkg.version;
+  }
+} catch {
+  // 读取失败使用默认版本
+}
 
 type ToolName = "codex" | "claude";
 
