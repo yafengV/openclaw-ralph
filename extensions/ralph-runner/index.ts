@@ -1,4 +1,4 @@
-import type { OpenClawPluginApi, PluginCommandContext } from "openclaw/plugin-sdk";
+import type { OpenClawPluginApi, PluginCommandContext, PluginToolContext } from "openclaw/plugin-sdk";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -30,7 +30,7 @@ type RalphJob = {
 
 const CODEX_PROMPT = `# Ralph Agent Instructions
 
-你是一个“自动化编码代理”，要在一个真实的软件项目里按 PRD（prd.json）逐条完成 user story。
+你是一个"自动化编码代理"，要在一个真实的软件项目里按 PRD（prd.json）逐条完成 user story。
 
 ## 你的任务（每次迭代只做一条）
 
@@ -315,10 +315,146 @@ export default function register(api: OpenClawPluginApi) {
       job.updatedAt = nowIso();
       await sendText(api, job, `执行失败（job=${job.jobId}）：${job.lastError}`);
     } finally {
-      // keep in map for /ralphjobs inspection
+      // keep in map for inspection
     }
   }
 
+  // Register tool interface for agent calls
+  api.registerTool(
+    (ctx: PluginToolContext) => {
+      return {
+        ralph_run: {
+          description: "Run Ralph background job. Parameters: repoPath (string), tool (codex|claude, default=codex), maxIterations (number, optional). Returns: { success: boolean, jobId?: string, message?: string }",
+          input_schema: {
+            type: "object",
+            properties: {
+              repoPath: { type: "string", description: "Path to the repository" },
+              tool: { type: "string", enum: ["codex", "claude"], description: "Tool to use", default: "codex" },
+              maxIterations: { type: "number", description: "Maximum iterations (optional, defaults to remaining stories)" },
+            },
+            required: ["repoPath"],
+          },
+        },
+        ralph_list: {
+          description: "List Ralph jobs. Returns: { jobs: Array<{jobId, status, iteration, maxIterations, tool, repoPath, lastError}> }",
+          input_schema: {
+            type: "object",
+            properties: {},
+          },
+        },
+        ralph_cancel: {
+          description: "Cancel a Ralph job. Parameters: jobId (string). Returns: { success: boolean, message?: string }",
+          input_schema: {
+            type: "object",
+            properties: {
+              jobId: { type: "string", description: "Job ID to cancel" },
+            },
+            required: ["jobId"],
+          },
+        },
+      };
+    },
+    {
+      names: ["ralph_run", "ralph_list", "ralph_cancel"],
+      handler: async (toolName: string, input: any) => {
+        if (toolName === "ralph_run") {
+          const repoPath = input.repoPath;
+          const tool = (input.tool as ToolName) || ((api.pluginConfig?.defaultTool as ToolName) ?? "codex");
+
+          if (!repoPath) {
+            return { success: false, message: "缺少参数：repoPath" };
+          }
+
+          if (tool !== "codex" && tool !== "claude") {
+            return { success: false, message: `tool 必须是 codex 或 claude，当前=${String(tool)}` };
+          }
+
+          if (runningCount() >= MAX_CONCURRENCY) {
+            return { success: false, message: `任务达上限：当前并发上限=${MAX_CONCURRENCY}` };
+          }
+
+          if (!fs.existsSync(prdPath(repoPath))) {
+            return { success: false, message: `找不到 prd.json：${prdPath(repoPath)}` };
+          }
+
+          const remaining = computeStoryState(repoPath).remaining;
+          if (remaining <= 0) {
+            return { success: false, message: "没有未完成 story（passes=false 为 0）" };
+          }
+
+          const maxIterationsRaw = input.maxIterations;
+          const maxIterationsParsed = maxIterationsRaw ? Number(maxIterationsRaw) : remaining;
+          const effectiveMax = Number.isFinite(maxIterationsParsed) ? Math.max(1, Math.floor(maxIterationsParsed)) : remaining;
+          const finalMax = Math.min(remaining, effectiveMax);
+
+          const jobId = `ralph_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+          const job: RalphJob = {
+            version: 1,
+            jobId,
+            createdAt: nowIso(),
+            updatedAt: nowIso(),
+            repoPath,
+            tool,
+            maxIterations: finalMax,
+            channel: "agent", // Agent call, no channel
+            status: "queued",
+            iteration: 0,
+          };
+
+          jobs.set(jobId, job);
+          void runJob(job);
+
+          logger.info("ralph-runner: job started (via tool)", { jobId, repoPath, tool, maxIterations: finalMax });
+
+          const s = computeStoryState(repoPath);
+          return {
+            success: true,
+            jobId,
+            message: `已启动 job=${jobId} tool=${tool} maxIterations=${finalMax} done/total=${s.done}/${s.total}${s.next ? ` next=[${s.next.id}] ${s.next.title}` : " next=全部完成"}`,
+          };
+        }
+
+        if (toolName === "ralph_list") {
+          if (jobs.size === 0) {
+            return { jobs: [] };
+          }
+          const jobList: any[] = [];
+          for (const j of jobs.values()) {
+            jobList.push({
+              jobId: j.jobId,
+              status: j.status,
+              iteration: j.iteration,
+              maxIterations: j.maxIterations,
+              tool: j.tool,
+              repoPath: j.repoPath,
+              lastError: j.lastError,
+            });
+          }
+          return { jobs: jobList };
+        }
+
+        if (toolName === "ralph_cancel") {
+          const jobId = input.jobId?.trim();
+          if (!jobId) {
+            return { success: false, message: "缺少 jobId" };
+          }
+          if (!jobs.has(jobId)) {
+            return { success: false, message: `未找到 job：${jobId}` };
+          }
+          cancels.add(jobId);
+          const job = jobs.get(jobId)!;
+          job.status = "canceled";
+          job.updatedAt = nowIso();
+          logger.info("ralph-runner: job canceled (via tool)", { jobId });
+          return { success: true, message: `已取消：${jobId}` };
+        }
+
+        return { success: false, message: `未知工具：${toolName}` };
+      },
+    },
+  );
+
+  // Keep command interface for backward compatibility and manual use
   api.registerCommand({
     name: "ralphrun",
     description:
@@ -375,7 +511,7 @@ export default function register(api: OpenClawPluginApi) {
       jobs.set(jobId, job);
       void runJob(job);
 
-      logger.info("ralph-runner: job started", { jobId, repoPath, tool, maxIterations: finalMax });
+      logger.info("ralph-runner: job started (via command)", { jobId, repoPath, tool, maxIterations: finalMax });
 
       const s = computeStoryState(repoPath);
       const next = s.next;
