@@ -80,13 +80,15 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function parseKvArgs(raw: string): Record<string, string> {
+function parseKvArgs(raw: any): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const token of raw.split(/\s+/).filter(Boolean)) {
-    const idx = token.indexOf("=");
+  const str = typeof raw === "string" ? raw : "";
+  for (const token of str.split(/\s+/).filter(Boolean)) {
+    const tokenStr = typeof token === "string" ? token : String(token);
+    const idx = tokenStr.indexOf("=");
     if (idx <= 0) continue;
-    const k = token.slice(0, idx).trim();
-    const v = token.slice(idx + 1).trim();
+    const k = tokenStr.slice(0, idx).trim();
+    const v = tokenStr.slice(idx + 1).trim();
     if (!k) continue;
     out[k] = v;
   }
@@ -130,33 +132,38 @@ function computeStoryState(repoPath: string): {
 }
 
 async function sendText(api: OpenClawPluginApi, job: RalphJob, text: string) {
-  if (!job.to) {
-    // 工具调用时没有 channel 信息，使用 logger 记录
-    api.logger.info(`ralph-runner [${job.jobId}]: ${text}`);
-    return;
-  }
-  if (job.channel === "telegram") {
-    await api.runtime.telegram.sendMessageTelegram(job.to, text, {
-      accountId: job.accountId,
-      messageThreadId: job.messageThreadId,
-    });
-    return;
-  }
-  if (job.channel === "slack") {
-    await api.runtime.slack.sendMessageSlack(job.to, text, { accountId: job.accountId });
-    return;
-  }
-  if (job.channel === "discord") {
-    await api.runtime.discord.sendMessageDiscord(job.to, text, { accountId: job.accountId });
-    return;
-  }
-  if (job.channel === "signal") {
-    await api.runtime.signal.sendMessageSignal(job.to, text, { accountId: job.accountId });
-    return;
-  }
-  if (job.channel === "imessage") {
-    await api.runtime.imessage.sendMessageIMessage(job.to, text, { accountId: job.accountId });
-    return;
+  try {
+    if (!job.to) {
+      // 工具调用时没有 channel 信息，使用 logger 记录
+      api.logger.info(`ralph-runner [${job.jobId}]: ${text}`);
+      return;
+    }
+    if (job.channel === "telegram") {
+      await api.runtime.telegram.sendMessageTelegram(job.to, text, {
+        accountId: job.accountId,
+        messageThreadId: job.messageThreadId,
+      });
+      return;
+    }
+    if (job.channel === "slack") {
+      await api.runtime.slack.sendMessageSlack(job.to, text, { accountId: job.accountId });
+      return;
+    }
+    if (job.channel === "discord") {
+      await api.runtime.discord.sendMessageDiscord(job.to, text, { accountId: job.accountId });
+      return;
+    }
+    if (job.channel === "signal") {
+      await api.runtime.signal.sendMessageSignal(job.to, text, { accountId: job.accountId });
+      return;
+    }
+    if (job.channel === "imessage") {
+      await api.runtime.imessage.sendMessageIMessage(job.to, text, { accountId: job.accountId });
+      return;
+    }
+  } catch (err: any) {
+    // 发送消息失败不影响任务执行，只记录错误
+    api.logger.error(`ralph-runner [${job.jobId}] sendText failed: ${err?.message || String(err)}`);
   }
 }
 
@@ -201,7 +208,7 @@ async function tryPushIfClean(api: OpenClawPluginApi, repoRoot: string) {
     if ((status.stdout ?? "").trim().length > 0) return;
     const hasOrigin = await git(api, repoRoot, ["remote", "get-url", "origin"]).catch(() => null);
     if (!hasOrigin) return;
-    const branch = (await git(api, repoRoot, ["branch", "--show-current"]))?.stdout?.trim();
+    const branch = await git(api, repoRoot, ["branch", "--show-current"]).then(r => r?.stdout?.trim() || "").catch(() => "");
     if (!branch) return;
     await git(api, repoRoot, ["push", "-u", "origin", branch], 180).catch(() => null);
   } catch {
@@ -216,7 +223,7 @@ async function runOneStory(api: OpenClawPluginApi, job: RalphJob) {
     return;
   }
 
-  const repoRoot = (await git(api, job.repoPath, ["rev-parse", "--show-toplevel"]))?.stdout?.trim();
+  const repoRoot = await git(api, job.repoPath, ["rev-parse", "--show-toplevel"]).then(r => r?.stdout?.trim() || "").catch(() => "");
   if (!repoRoot) throw new Error("repoPath 不是有效 git 仓库（缺少 .git）");
 
   const iterationId = `${job.jobId}#${job.iteration + 1}`;
@@ -244,7 +251,7 @@ async function runOneStory(api: OpenClawPluginApi, job: RalphJob) {
   await tryPushIfClean(api, repoRoot);
 
   const after = computeStoryState(job.repoPath);
-  const commit = (await git(api, repoRoot, ["log", "-1", "--pretty=%h"]))?.stdout?.trim() || "-";
+  const commit = await git(api, repoRoot, ["log", "-1", "--pretty=%h"]).then(r => r?.stdout?.trim() || "-").catch(() => "-");
 
   // Validate that the story we attempted is now marked passes=true
   const completedId = before.next.id;
