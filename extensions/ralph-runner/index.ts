@@ -2,6 +2,8 @@ import type { OpenClawPluginApi, PluginCommandContext, PluginToolContext } from 
 import fs from "node:fs";
 import path from "node:path";
 
+const PLUGIN_VERSION = "1.0.1";
+
 type ToolName = "codex" | "claude";
 
 type JobStatus = "queued" | "running" | "completed" | "failed" | "canceled";
@@ -432,7 +434,7 @@ export default function register(api: OpenClawPluginApi) {
           return {
             success: true,
             jobId,
-            message: `已启动 job=${jobId} tool=${tool} maxIterations=${finalMax} done/total=${s.done}/${s.total}${s.next ? ` next=[${s.next.id}] ${s.next.title}` : " next=全部完成"}`,
+            message: `[ralph-runner v${PLUGIN_VERSION}] 已启动 job=${jobId} tool=${tool} maxIterations=${finalMax} done/total=${s.done}/${s.total}${s.next ? ` next=[${s.next.id}] ${s.next.title}` : " next=全部完成"}`,
           };
         }
 
@@ -539,6 +541,7 @@ export default function register(api: OpenClawPluginApi) {
       const next = s.next;
       return {
         text:
+          `[ralph-runner v${PLUGIN_VERSION}] ` +
           `已启动 job=${jobId} tool=${tool} maxIterations=${finalMax} done/total=${s.done}/${s.total}` +
           (next ? `\nnext=[${next.id}] ${next.title}` : "\nnext=全部完成"),
       };
