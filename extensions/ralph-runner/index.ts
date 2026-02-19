@@ -1,10 +1,10 @@
-import type { OpenClawPluginApi, OpenClawPluginService, PluginCommandContext } from "openclaw/plugin-sdk";
+import type { OpenClawPluginApi, PluginCommandContext } from "openclaw/plugin-sdk";
 import fs from "node:fs";
 import path from "node:path";
 
 type ToolName = "codex" | "claude";
 
-type JobStatus = "queued" | "running" | "paused" | "completed" | "failed" | "canceled";
+type JobStatus = "queued" | "running" | "completed" | "failed" | "canceled";
 
 type RalphJob = {
   version: 1;
@@ -28,6 +28,52 @@ type RalphJob = {
   lastError?: string;
 };
 
+const CODEX_PROMPT = `# Ralph Agent Instructions
+
+你是一个“自动化编码代理”，要在一个真实的软件项目里按 PRD（prd.json）逐条完成 user story。
+
+## 你的任务（每次迭代只做一条）
+
+1. 读取 \`scripts/ralph/prd.json\`
+2. 读取 \`scripts/ralph/progress.txt\`（先看最上面的 **Codebase Patterns**）
+3. **所有代码改动都在仓库根目录进行**（也就是包含 \`.git/\` 的目录）。
+4. 确认当前 git 分支与 PRD 里的 \`branchName\` 一致：
+   - 不一致则 \`git checkout <branchName>\`
+   - 分支不存在则从 main/master 创建
+5. 选取 **priority 最小**且 \`passes: false\` 的 user story
+6. 只实现这 1 条 user story
+7. 运行项目质量检查（按项目约定：typecheck/lint/test 等）
+8. 如发现可复用模式/坑点：更新 \`progress.txt\` 顶部的 Codebase Patterns
+9. 若检查通过：提交所有改动，commit message：\`feat: [Story ID] - [Story Title]\`
+10. 更新 \`prd.json\`：将该 story 的 \`passes\` 改为 \`true\`
+11. 在 \`progress.txt\` 末尾追加进展记录
+
+## Stop Condition
+
+如果所有 stories 都 \`passes: true\`，请在最后输出：
+
+<promise>COMPLETE</promise>
+
+## 重要约束
+- **不要**在 \`scripts/ralph/\` 下创建 Next.js 项目文件（那里只放 ralph 的配置与进度）。
+- Next.js / Prisma 等项目文件应位于仓库根目录（例如 \`app/\`、\`prisma/\`、\`package.json\` 等）。
+`;
+
+const CLAUDE_PROMPT = `# Ralph Agent Instructions (Claude Code)
+
+你是一个自动化编码代理。每次只完成一条 user story。
+
+必须：
+- 读取 scripts/ralph/prd.json，选择 priority 最小且 passes=false 的 story
+- 实现它并运行 typecheck/lint/test（按项目已有脚本）
+- git commit（feat: [Story ID] - [Story Title]）
+- prd.json 里把该 story passes 改为 true
+- progress.txt 追加记录
+
+完成全部后输出：
+<promise>COMPLETE</promise>
+`;
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -49,44 +95,40 @@ function readJson<T>(p: string): T {
   return JSON.parse(fs.readFileSync(p, "utf8")) as T;
 }
 
-function writeJson(p: string, v: unknown) {
-  fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, JSON.stringify(v, null, 2) + "\n", "utf8");
-}
-
-function safeBasename(p: string) {
-  return path.basename(p).replace(/[^a-zA-Z0-9._-]/g, "_");
-}
-
 function prdPath(repoPath: string) {
   return path.join(repoPath, "scripts", "ralph", "prd.json");
 }
 
-function progressPath(repoPath: string) {
-  return path.join(repoPath, "scripts", "ralph", "progress.txt");
-}
-
-function ralphShPath(repoPath: string) {
-  return path.join(repoPath, "scripts", "ralph", "ralph.sh");
-}
-
-function computeRemainingStories(repoPath: string): { done: number; total: number; next?: { id: string; title: string } } {
+function computeStoryState(repoPath: string): {
+  done: number;
+  total: number;
+  remaining: number;
+  next?: { id: string; title: string; priority?: number };
+  passesById: Record<string, boolean>;
+} {
   const prd = readJson<any>(prdPath(repoPath));
   const stories = Array.isArray(prd.userStories) ? prd.userStories.slice() : [];
   stories.sort((a, b) => (a.priority ?? 9999) - (b.priority ?? 9999));
   const done = stories.filter((s) => s.passes === true).length;
   const total = stories.length;
   const nextStory = stories.find((s) => s.passes !== true);
+  const passesById: Record<string, boolean> = {};
+  for (const s of stories) {
+    if (s?.id) passesById[String(s.id)] = s.passes === true;
+  }
   return {
     done,
     total,
-    next: nextStory ? { id: String(nextStory.id ?? ""), title: String(nextStory.title ?? "") } : undefined,
+    remaining: total - done,
+    next: nextStory
+      ? { id: String(nextStory.id ?? ""), title: String(nextStory.title ?? ""), priority: nextStory.priority }
+      : undefined,
+    passesById,
   };
 }
 
-async function sendToCtx(api: OpenClawPluginApi, job: RalphJob, text: string) {
+async function sendText(api: OpenClawPluginApi, job: RalphJob, text: string) {
   if (!job.to) return;
-
   if (job.channel === "telegram") {
     await api.runtime.telegram.sendMessageTelegram(job.to, text, {
       accountId: job.accountId,
@@ -94,225 +136,193 @@ async function sendToCtx(api: OpenClawPluginApi, job: RalphJob, text: string) {
     });
     return;
   }
-
   if (job.channel === "slack") {
-    await api.runtime.slack.sendMessageSlack(job.to, text, {
-      accountId: job.accountId,
-    });
+    await api.runtime.slack.sendMessageSlack(job.to, text, { accountId: job.accountId });
     return;
   }
-
   if (job.channel === "discord") {
-    await api.runtime.discord.sendMessageDiscord(job.to, text, {
-      accountId: job.accountId,
-    });
+    await api.runtime.discord.sendMessageDiscord(job.to, text, { accountId: job.accountId });
     return;
   }
-
   if (job.channel === "signal") {
-    await api.runtime.signal.sendMessageSignal(job.to, text, {
-      accountId: job.accountId,
-    });
+    await api.runtime.signal.sendMessageSignal(job.to, text, { accountId: job.accountId });
     return;
   }
-
   if (job.channel === "imessage") {
-    await api.runtime.imessage.sendMessageIMessage(job.to, text, {
-      accountId: job.accountId,
-    });
+    await api.runtime.imessage.sendMessageIMessage(job.to, text, { accountId: job.accountId });
     return;
   }
-
-  // best-effort: if unknown channel, do nothing
 }
 
-function formatProgressMessage(params: {
-  completed?: { id: string; title: string; sessionKey: string; commit: string; done: number; total: number };
+function formatProgress(params: {
+  completed: { id: string; title: string; sessionKey: string; commit: string; done: number; total: number };
   next?: { id: string; title: string; sessionKey: string };
-  allDone?: boolean;
 }) {
-  if (params.allDone) {
-    return [
-      "已完成：",
-      `- 全部完成`,
-      `- 完成 story 的 subagent sessionKey：-`,
-      `- 结果：commit -，done/total - / -`,
-      "",
-      "将进行：",
-      `- 全部完成`,
-      `- 下一个 story 的 subagent sessionKey：-`, 
-    ].join("\n");
-  }
+  const nextBlock = params.next
+    ? [
+        "将进行：",
+        `- [${params.next.id}] ${params.next.title}`,
+        `- 下一个 story 的 subagent sessionKey：${params.next.sessionKey}`,
+      ]
+    : ["将进行：", "- 全部完成", "- 下一个 story 的 subagent sessionKey：-"];
 
-  const c = params.completed;
-  const n = params.next;
   return [
     "已完成：",
-    `- [${c?.id}] ${c?.title}`,
-    `- 完成 story 的 subagent sessionKey：${c?.sessionKey ?? "-"}`,
-    `- 结果：commit ${c?.commit ?? "-"}，done/total ${c?.done ?? "-"} / ${c?.total ?? "-"}`,
+    `- [${params.completed.id}] ${params.completed.title}`,
+    `- 完成 story 的 subagent sessionKey：${params.completed.sessionKey}`,
+    `- 结果：commit ${params.completed.commit}，done/total ${params.completed.done} / ${params.completed.total}`,
     "",
-    "将进行：",
-    `- [${n?.id}] ${n?.title}`,
-    `- 下一个 story 的 subagent sessionKey：${n?.sessionKey ?? "-"}`,
+    ...nextBlock,
   ].join("\n");
 }
 
-function newJobId() {
-  return `ralph_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+async function run(argv: string[], api: OpenClawPluginApi, opts: { timeoutSec: number; cwd?: string; input?: string }) {
+  return api.runtime.system.runCommandWithTimeout(argv, {
+    timeoutMs: opts.timeoutSec * 1000,
+    cwd: opts.cwd,
+    input: opts.input,
+    env: process.env,
+  });
+}
+
+async function git(api: OpenClawPluginApi, repoRoot: string, args: string[], timeoutSec = 60) {
+  return run(["git", ...args], api, { timeoutSec, cwd: repoRoot });
+}
+
+async function tryPushIfClean(api: OpenClawPluginApi, repoRoot: string) {
+  try {
+    const status = await git(api, repoRoot, ["status", "--porcelain"]);
+    if ((status.stdout ?? "").trim().length > 0) return;
+    const hasOrigin = await git(api, repoRoot, ["remote", "get-url", "origin"]).catch(() => null);
+    if (!hasOrigin) return;
+    const branch = (await git(api, repoRoot, ["branch", "--show-current"]))?.stdout?.trim();
+    if (!branch) return;
+    await git(api, repoRoot, ["push", "-u", "origin", branch], 180).catch(() => null);
+  } catch {
+    // best-effort
+  }
+}
+
+async function runOneStory(api: OpenClawPluginApi, job: RalphJob) {
+  const before = computeStoryState(job.repoPath);
+  if (!before.next) {
+    job.status = "completed";
+    return;
+  }
+
+  const repoRoot = (await git(api, job.repoPath, ["rev-parse", "--show-toplevel"]))?.stdout?.trim();
+  if (!repoRoot) throw new Error("repoPath 不是有效 git 仓库（缺少 .git）");
+
+  const iterationId = `${job.jobId}#${job.iteration + 1}`;
+
+  // Run tool (single iteration)
+  const timeoutSec = Number(api.pluginConfig?.iterationTimeoutSec ?? 1800);
+
+  if (job.tool === "codex") {
+    await run(
+      ["codex", "exec", "--full-auto", "-C", repoRoot, "--add-dir", path.join(repoRoot, "scripts", "ralph")],
+      api,
+      { timeoutSec, cwd: repoRoot, input: CODEX_PROMPT },
+    );
+  } else {
+    const args = [
+      "--dangerously-skip-permissions",
+      "--print",
+      "--verbose",
+      "--output-format=stream-json",
+      "--include-partial-messages",
+    ];
+    await run(["claude", ...args], api, { timeoutSec, cwd: repoRoot, input: CLAUDE_PROMPT });
+  }
+
+  await tryPushIfClean(api, repoRoot);
+
+  const after = computeStoryState(job.repoPath);
+  const commit = (await git(api, repoRoot, ["log", "-1", "--pretty=%h"]))?.stdout?.trim() || "-";
+
+  // Validate that the story we attempted is now marked passes=true
+  const completedId = before.next.id;
+  const wasMarked = after.passesById[completedId] === true;
+  if (!wasMarked) {
+    throw new Error(`该轮执行后 story 未标记完成：${completedId}`);
+  }
+
+  const completed = {
+    id: completedId,
+    title: before.next.title,
+    sessionKey: iterationId,
+    commit,
+    done: after.done,
+    total: after.total,
+  };
+
+  const next = after.next
+    ? {
+        id: after.next.id,
+        title: after.next.title,
+        sessionKey: `${job.jobId}#${job.iteration + 2}`,
+      }
+    : undefined;
+
+  job.iteration += 1;
+  job.lastCompletedStoryId = completed.id;
+  job.lastCompletedCommit = completed.commit;
+  job.updatedAt = nowIso();
+
+  await sendText(api, job, formatProgress({ completed, next }));
+
+  if (!after.next || after.done === after.total) {
+    job.status = "completed";
+  }
 }
 
 export default function register(api: OpenClawPluginApi) {
   const logger = api.logger;
-  const stateDir = api.runtime.state.resolveStateDir();
-  const jobsDir = path.join(stateDir, "ralph-runner", "jobs");
 
-  const running: { current?: Promise<void> } = {};
+  const MAX_CONCURRENCY = 3;
+  const jobs = new Map<string, RalphJob>();
+  const cancels = new Set<string>();
 
-  function jobPath(jobId: string) {
-    return path.join(jobsDir, `${jobId}.json`);
+  function runningCount() {
+    let n = 0;
+    for (const j of jobs.values()) if (j.status === "running" || j.status === "queued") n += 1;
+    return n;
   }
 
-  function listJobs(): RalphJob[] {
-    if (!fs.existsSync(jobsDir)) return [];
-    const files = fs.readdirSync(jobsDir).filter((f) => f.endsWith(".json"));
-    const out: RalphJob[] = [];
-    for (const f of files) {
-      try {
-        out.push(readJson<RalphJob>(path.join(jobsDir, f)));
-      } catch {
-        // ignore corrupt
-      }
-    }
-    out.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-    return out;
-  }
-
-  function saveJob(job: RalphJob) {
+  async function runJob(job: RalphJob) {
+    job.status = "running";
     job.updatedAt = nowIso();
-    writeJson(jobPath(job.jobId), job);
-  }
 
-  async function runOneIteration(job: RalphJob) {
-    const { done, total, next } = computeRemainingStories(job.repoPath);
-    if (!next) {
-      job.status = "completed";
-      saveJob(job);
-      await sendToCtx(api, job, formatProgressMessage({ allDone: true }));
-      return;
-    }
-
-    // NOTE: In MVP we rely on repo-local scripts/ralph/ralph.sh.
-    const sh = ralphShPath(job.repoPath);
-    if (!fs.existsSync(sh)) {
-      throw new Error(`missing ralph.sh at ${sh} (MVP requirement)`);
-    }
-
-    const iterId = `${job.jobId}#${job.iteration + 1}`;
-
-    const beforeCommit = await api.runtime.system.runCommandWithTimeout({
-      cmd: `cd ${JSON.stringify(job.repoPath)} && git rev-parse --short HEAD`,
-      timeoutMs: 60_000,
-    });
-
-    await api.runtime.system.runCommandWithTimeout({
-      cmd: `cd ${JSON.stringify(path.join(job.repoPath, "scripts", "ralph"))} && ./ralph.sh --tool ${job.tool} 1`,
-      timeoutMs: (api.pluginConfig?.iterationTimeoutSec as number | undefined ?? 1800) * 1000,
-    });
-
-    const after = computeRemainingStories(job.repoPath);
-    const commit = await api.runtime.system.runCommandWithTimeout({
-      cmd: `cd ${JSON.stringify(job.repoPath)} && git log -1 --pretty=%h`,
-      timeoutMs: 60_000,
-    });
-
-    const completed = {
-      id: next.id,
-      title: next.title,
-      sessionKey: iterId,
-      commit: String(commit.stdout ?? "").trim() || String(beforeCommit.stdout ?? "").trim(),
-      done: after.done,
-      total: after.total,
-    };
-
-    const nextStory = after.next;
-
-    job.iteration += 1;
-    job.lastCompletedStoryId = completed.id;
-    job.lastCompletedCommit = completed.commit;
-
-    if (!nextStory || after.done === after.total) {
-      job.status = "completed";
-      saveJob(job);
-      await sendToCtx(api, job, formatProgressMessage({ completed, next: { id: completed.id, title: "全部完成", sessionKey: "-" }, allDone: false }));
-      return;
-    }
-
-    saveJob(job);
-    const msg = formatProgressMessage({
-      completed,
-      next: {
-        id: nextStory.id,
-        title: nextStory.title,
-        sessionKey: `${job.jobId}#${job.iteration + 1}`,
-      },
-    });
-    await sendToCtx(api, job, msg);
-  }
-
-  async function tick() {
-    if (running.current) return;
-
-    const jobs = listJobs();
-    const job = jobs.find((j) => j.status === "queued" || j.status === "running");
-    if (!job) return;
-
-    running.current = (async () => {
-      try {
-        if (job.status === "queued") {
-          job.status = "running";
-          saveJob(job);
+    try {
+      while (job.status === "running") {
+        if (cancels.has(job.jobId)) {
+          job.status = "canceled";
+          break;
         }
 
-        // recompute remaining each tick; cap iterations
-        const remaining = computeRemainingStories(job.repoPath).total - computeRemainingStories(job.repoPath).done;
+        const remaining = computeStoryState(job.repoPath).remaining;
         const cap = Math.min(remaining, job.maxIterations);
-        if (job.iteration >= cap) {
-          job.status = "paused";
-          saveJob(job);
-          await sendToCtx(api, job, `已暂停：达到本次上限（iteration=${job.iteration}/${cap}）。如需继续：/ralphrun repoPath=${job.repoPath} tool=${job.tool}`);
-          return;
+        if (remaining <= 0 || job.iteration >= cap) {
+          job.status = remaining <= 0 ? "completed" : "completed";
+          break;
         }
 
-        await runOneIteration(job);
-      } catch (err: any) {
-        job.status = "failed";
-        job.lastError = err?.message || String(err);
-        saveJob(job);
-        await sendToCtx(api, job, `执行失败：${job.lastError}`);
-      } finally {
-        running.current = undefined;
+        await runOneStory(api, job);
       }
-    })();
+    } catch (err: any) {
+      job.status = "failed";
+      job.lastError = err?.message || String(err);
+      job.updatedAt = nowIso();
+      await sendText(api, job, `执行失败（job=${job.jobId}）：${job.lastError}`);
+    } finally {
+      // keep in map for /ralphjobs inspection
+    }
   }
-
-  const service: OpenClawPluginService = {
-    id: "ralph-runner-service",
-    start: async () => {
-      fs.mkdirSync(jobsDir, { recursive: true });
-      setInterval(() => {
-        tick().catch(() => {});
-      }, 3_000).unref?.();
-
-      logger.info("ralph-runner: service started", { jobsDir });
-    },
-  };
-
-  api.registerService(service);
 
   api.registerCommand({
     name: "ralphrun",
-    description: "Run Ralph iteratively with progress pushed back to this chat. Usage: /ralphrun repoPath=... tool=codex|claude maxIterations=10",
+    description:
+      "Run Ralph as a plugin background job (no subagents). Usage: /ralphrun repoPath=... tool=codex|claude maxIterations=10",
     acceptsArgs: true,
     requireAuth: true,
     handler: async (ctx: PluginCommandContext) => {
@@ -322,15 +332,30 @@ export default function register(api: OpenClawPluginApi) {
         return { text: "缺少参数：repoPath。示例：/ralphrun repoPath=/path/to/repo tool=codex maxIterations=10" };
       }
 
+      if (runningCount() >= MAX_CONCURRENCY) {
+        return { text: `任务达上限：当前并发上限=${MAX_CONCURRENCY}。请稍后再试或先 /ralphjobs 查看状态。` };
+      }
+
+      if (!fs.existsSync(prdPath(repoPath))) {
+        return { text: `找不到 prd.json：${prdPath(repoPath)}` };
+      }
+
       const tool = (kv.tool as ToolName) || ((api.pluginConfig?.defaultTool as ToolName) ?? "codex");
-      const maxIterations = Number(kv.maxIterations || kv.iterations || api.pluginConfig?.maxIterationsDefault || 20);
+      if (tool !== "codex" && tool !== "claude") {
+        return { text: `tool 必须是 codex 或 claude，当前=${String(tool)}` };
+      }
 
-      // compute remaining if user omitted maxIterations
-      const remaining = computeRemainingStories(repoPath).remaining;
-      const effectiveMax = Number.isFinite(maxIterations) ? Math.max(1, Math.floor(maxIterations)) : remaining;
-      const finalMax = Math.max(1, Math.min(remaining || 1, effectiveMax));
+      const remaining = computeStoryState(repoPath).remaining;
+      if (remaining <= 0) {
+        return { text: "没有未完成 story（passes=false 为 0）。" };
+      }
 
-      const jobId = newJobId();
+      const maxIterationsRaw = kv.maxIterations || kv.iterations;
+      const maxIterationsParsed = maxIterationsRaw ? Number(maxIterationsRaw) : remaining;
+      const effectiveMax = Number.isFinite(maxIterationsParsed) ? Math.max(1, Math.floor(maxIterationsParsed)) : remaining;
+      const finalMax = Math.min(remaining, effectiveMax);
+
+      const jobId = `ralph_${Date.now()}_${Math.random().toString(16).slice(2)}`;
       const job: RalphJob = {
         version: 1,
         jobId,
@@ -347,24 +372,16 @@ export default function register(api: OpenClawPluginApi) {
         iteration: 0,
       };
 
-      // basic preflight
-      if (!fs.existsSync(prdPath(repoPath))) {
-        return { text: `找不到 prd.json：${prdPath(repoPath)}` };
-      }
-      if (!fs.existsSync(progressPath(repoPath))) {
-        // best effort: don't fail
-      }
+      jobs.set(jobId, job);
+      void runJob(job);
 
-      saveJob(job);
-      await tick();
+      logger.info("ralph-runner: job started", { jobId, repoPath, tool, maxIterations: finalMax });
 
-      const summary = computeRemainingStories(repoPath);
-      const next = summary.nextStory;
+      const s = computeStoryState(repoPath);
+      const next = s.next;
       return {
         text:
-          `已创建任务：${jobId}\n` +
-          `repo=${safeBasename(repoPath)} tool=${tool} maxIterations=${finalMax}\n` +
-          `done/total=${summary.done}/${summary.total}` +
+          `已启动 job=${jobId} tool=${tool} maxIterations=${finalMax} done/total=${s.done}/${s.total}` +
           (next ? `\nnext=[${next.id}] ${next.title}` : "\nnext=全部完成"),
       };
     },
@@ -372,14 +389,36 @@ export default function register(api: OpenClawPluginApi) {
 
   api.registerCommand({
     name: "ralphjobs",
-    description: "List ralph-runner jobs",
-    acceptsArgs: false,
+    description: "List current ralph-runner jobs",
     requireAuth: true,
     handler: async () => {
-      const jobs = listJobs();
-      if (jobs.length === 0) return { text: "暂无任务。" };
-      const lines = jobs.map((j) => `${j.jobId} ${j.status} iter=${j.iteration}/${j.maxIterations} repo=${j.repoPath}`);
+      if (jobs.size === 0) return { text: "暂无任务。" };
+      const lines: string[] = [];
+      for (const j of jobs.values()) {
+        lines.push(
+          `${j.jobId} ${j.status} iter=${j.iteration}/${j.maxIterations} tool=${j.tool} repo=${j.repoPath}` +
+            (j.lastError ? ` err=${j.lastError}` : ""),
+        );
+      }
       return { text: lines.join("\n") };
+    },
+  });
+
+  api.registerCommand({
+    name: "ralphcancel",
+    description: "Cancel a running job. Usage: /ralphcancel jobId=...",
+    acceptsArgs: true,
+    requireAuth: true,
+    handler: async (ctx: PluginCommandContext) => {
+      const kv = parseKvArgs(ctx.args ?? "");
+      const jobId = kv.jobId || kv.id || (ctx.args ?? "").trim();
+      if (!jobId) return { text: "缺少 jobId。示例：/ralphcancel jobId=ralph_xxx" };
+      if (!jobs.has(jobId)) return { text: `未找到 job：${jobId}` };
+      cancels.add(jobId);
+      const job = jobs.get(jobId)!;
+      job.status = "canceled";
+      job.updatedAt = nowIso();
+      return { text: `已取消：${jobId}` };
     },
   });
 }
