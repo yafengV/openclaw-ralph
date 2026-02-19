@@ -1,6 +1,6 @@
 ---
 name: ralph
-description: "把 PRD 文本转换成 ralph 的 prd.json 并写入指定项目路径。仅负责 PRD→prd.json，不负责执行 ralph.sh（执行由 run-ralph skill 负责）。每次调用由用户传入 repo 路径。"
+description: "把 PRD 文本转换成 ralph 的 prd.json 并写入指定项目路径。仅负责 PRD→prd.json，不负责执行 Ralph（执行由 ralph-runner 插件负责）。每次调用由用户传入 repo 路径。"
 user-invocable: true
 ---
 
@@ -9,8 +9,6 @@ user-invocable: true
 你要做两件事：
 1) 收到用户给的 **PRD 文本**（Markdown 或纯文本）
 2) 在用户指定的项目仓库里生成 `scripts/ralph/prd.json`
-
-> 约定：本 skill 自带一份 `ralph.sh / CODEX.md / CLAUDE.md`，运行时拷贝到目标仓库的 `scripts/ralph/`。
 
 ---
 
@@ -22,19 +20,13 @@ user-invocable: true
 
 ---
 
-## 步骤 A：准备目标目录与 Ralph 脚本
+## 步骤 A：准备目标目录
 
 在 `repoPath` 下执行：
 
 1) 确保目录存在：`mkdir -p scripts/ralph`
-2) 将本 skill 的 bundle 文件复制进去：
-   - `ralph.sh`
-   - `CODEX.md`
-   - `CLAUDE.md`
-3) `chmod +x scripts/ralph/ralph.sh`
-4) 确保依赖存在：`jq`、以及用户选择的工具（codex 或 claude）在 PATH 中
 
-**注意**：Ralph 读取的是 `scripts/ralph/prd.json` 和 `scripts/ralph/progress.txt`。
+**注意**：ralph-runner 插件会读取 `scripts/ralph/prd.json` 和 `scripts/ralph/progress.txt`（progress.txt 会自动创建）。
 
 ---
 
@@ -76,9 +68,10 @@ user-invocable: true
 
 ## 执行边界（重要）
 
-`ralph` skill **不执行** `ralph.sh`。当用户要进入迭代开发阶段时：
-- 明确引导用户改用 `run-ralph` skill
-- 或在当前会话中直接切换到 run-ralph 的调度流程
+`ralph` skill **不执行** Ralph。当用户要进入迭代开发阶段时：
+- 引导用户使用 **ralph-runner 插件**
+- 工具调用：`ralph_run(repoPath, tool="codex|claude", maxIterations?)`
+- 或命令：`/ralphrun repoPath=... tool=codex|claude maxIterations=...`
 
 ---
 
@@ -86,6 +79,6 @@ user-invocable: true
 
 用户消息示例：
 
-- “用 ralph 生成 prd.json。repoPath=/path/to/repo feature=task-priority。PRD：<粘贴PRD>”
+- "用 ralph 生成 prd.json。repoPath=/path/to/repo feature=task-priority。PRD：<粘贴PRD>"
 
-你要从消息里解析出参数并开始执行；若用户要求直接迭代实现，转交 `run-ralph` skill。
+你要从消息里解析出参数并开始执行；若用户要求直接迭代实现，引导使用 ralph-runner 插件。
