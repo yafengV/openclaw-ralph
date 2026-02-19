@@ -128,7 +128,11 @@ function computeStoryState(repoPath: string): {
 }
 
 async function sendText(api: OpenClawPluginApi, job: RalphJob, text: string) {
-  if (!job.to) return;
+  if (!job.to) {
+    // 工具调用时没有 channel 信息，使用 logger 记录
+    api.logger.info(`ralph-runner [${job.jobId}]: ${text}`);
+    return;
+  }
   if (job.channel === "telegram") {
     await api.runtime.telegram.sendMessageTelegram(job.to, text, {
       accountId: job.accountId,
@@ -293,6 +297,8 @@ export default function register(api: OpenClawPluginApi) {
     job.status = "running";
     job.updatedAt = nowIso();
 
+    let lastError: string | undefined;
+
     try {
       while (job.status === "running") {
         if (cancels.has(job.jobId)) {
@@ -307,14 +313,30 @@ export default function register(api: OpenClawPluginApi) {
           break;
         }
 
-        await runOneStory(api, job);
+        try {
+          await runOneStory(api, job);
+        } catch (err: any) {
+          // 单个任务失败，记录错误但继续执行下一个
+          lastError = err?.message || String(err);
+          job.iteration += 1;
+          job.updatedAt = nowIso();
+          await sendText(api, job, `第 ${job.iteration} 轮失败：${lastError}，继续执行下一个任务`);
+
+          // 避免连续失败导致无限循环，暂停一下
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
       }
     } catch (err: any) {
       job.status = "failed";
-      job.lastError = err?.message || String(err);
+      job.lastError = err?.message || String(err) || lastError;
       job.updatedAt = nowIso();
       await sendText(api, job, `执行失败（job=${job.jobId}）：${job.lastError}`);
     } finally {
+      if (lastError && job.status === "running") {
+        job.status = "failed";
+        job.lastError = lastError;
+        job.updatedAt = nowIso();
+      }
       // keep in map for inspection
     }
   }
@@ -434,7 +456,7 @@ export default function register(api: OpenClawPluginApi) {
         }
 
         if (toolName === "ralph_cancel") {
-          const jobId = input.jobId?.trim();
+          const jobId = input.jobId ? String(input.jobId).trim() : "";
           if (!jobId) {
             return { success: false, message: "缺少 jobId" };
           }
