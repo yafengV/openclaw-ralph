@@ -162,14 +162,14 @@ function formatProgress(params: {
     ? [
         "将进行：",
         `- [${params.next.id}] ${params.next.title}`,
-        `- 下一个 story 的 subagent sessionKey：${params.next.sessionKey}`,
+        `- 下一个 story 的 jobId/iteration：${params.next.sessionKey}`,
       ]
-    : ["将进行：", "- 全部完成", "- 下一个 story 的 subagent sessionKey：-"];
+    : ["将进行：", "- 全部完成", "- 下一个 story 的 jobId/iteration：-"];
 
   return [
     "已完成：",
     `- [${params.completed.id}] ${params.completed.title}`,
-    `- 完成 story 的 subagent sessionKey：${params.completed.sessionKey}`,
+    `- 完成 story 的 jobId/iteration：${params.completed.sessionKey}`,
     `- 结果：commit ${params.completed.commit}，done/total ${params.completed.done} / ${params.completed.total}`,
     "",
     ...nextBlock,
