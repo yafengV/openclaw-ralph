@@ -2,7 +2,7 @@ import type { OpenClawPluginApi, PluginCommandContext, PluginToolContext } from 
 import fs from "node:fs";
 import path from "node:path";
 
-const PLUGIN_VERSION = "1.0.1";
+const PLUGIN_VERSION = "1.0.2";
 
 type ToolName = "codex" | "claude";
 
@@ -95,8 +95,12 @@ function parseKvArgs(raw: any): Record<string, string> {
   return out;
 }
 
-function readJson<T>(p: string): T {
-  return JSON.parse(fs.readFileSync(p, "utf8")) as T;
+function readJson<T>(p: string): T | null {
+  try {
+    return JSON.parse(fs.readFileSync(p, "utf8")) as T;
+  } catch {
+    return null;
+  }
 }
 
 function prdPath(repoPath: string) {
@@ -109,26 +113,33 @@ function computeStoryState(repoPath: string): {
   remaining: number;
   next?: { id: string; title: string; priority?: number };
   passesById: Record<string, boolean>;
-} {
-  const prd = readJson<any>(prdPath(repoPath));
-  const stories = Array.isArray(prd.userStories) ? prd.userStories.slice() : [];
-  stories.sort((a, b) => (a.priority ?? 9999) - (b.priority ?? 9999));
-  const done = stories.filter((s) => s.passes === true).length;
-  const total = stories.length;
-  const nextStory = stories.find((s) => s.passes !== true);
-  const passesById: Record<string, boolean> = {};
-  for (const s of stories) {
-    if (s?.id) passesById[String(s.id)] = s.passes === true;
+} | null {
+  try {
+    const prd = readJson<any>(prdPath(repoPath));
+    if (!prd || !Array.isArray(prd.userStories)) {
+      return { done: 0, total: 0, remaining: 0, passesById: {} };
+    }
+    const stories = prd.userStories.slice();
+    stories.sort((a, b) => (a.priority ?? 9999) - (b.priority ?? 9999));
+    const done = stories.filter((s) => s.passes === true).length;
+    const total = stories.length;
+    const nextStory = stories.find((s) => s.passes !== true);
+    const passesById: Record<string, boolean> = {};
+    for (const s of stories) {
+      if (s?.id) passesById[String(s.id)] = s.passes === true;
+    }
+    return {
+      done,
+      total,
+      remaining: total - done,
+      next: nextStory
+        ? { id: String(nextStory.id ?? ""), title: String(nextStory.title ?? ""), priority: nextStory.priority }
+        : undefined,
+      passesById,
+    };
+  } catch {
+    return null;
   }
-  return {
-    done,
-    total,
-    remaining: total - done,
-    next: nextStory
-      ? { id: String(nextStory.id ?? ""), title: String(nextStory.title ?? ""), priority: nextStory.priority }
-      : undefined,
-    passesById,
-  };
 }
 
 async function sendText(api: OpenClawPluginApi, job: RalphJob, text: string) {
@@ -138,27 +149,23 @@ async function sendText(api: OpenClawPluginApi, job: RalphJob, text: string) {
       api.logger.info(`ralph-runner [${job.jobId}]: ${text}`);
       return;
     }
-    if (job.channel === "telegram") {
+    const channel = api.runtime[job.channel as keyof typeof api.runtime];
+    if (channel && typeof channel === "object" && "sendMessage" in channel) {
+      const channelObj = channel as any;
+      if (typeof channelObj.sendMessage === "function") {
+        await channelObj.sendMessage(job.to, text, {
+          accountId: job.accountId,
+          messageThreadId: job.messageThreadId,
+        });
+        return;
+      }
+    }
+    // 降级：尝试 telegram 的直接方法
+    if (job.channel === "telegram" && api.runtime.telegram && typeof api.runtime.telegram.sendMessageTelegram === "function") {
       await api.runtime.telegram.sendMessageTelegram(job.to, text, {
         accountId: job.accountId,
         messageThreadId: job.messageThreadId,
       });
-      return;
-    }
-    if (job.channel === "slack") {
-      await api.runtime.slack.sendMessageSlack(job.to, text, { accountId: job.accountId });
-      return;
-    }
-    if (job.channel === "discord") {
-      await api.runtime.discord.sendMessageDiscord(job.to, text, { accountId: job.accountId });
-      return;
-    }
-    if (job.channel === "signal") {
-      await api.runtime.signal.sendMessageSignal(job.to, text, { accountId: job.accountId });
-      return;
-    }
-    if (job.channel === "imessage") {
-      await api.runtime.imessage.sendMessageIMessage(job.to, text, { accountId: job.accountId });
       return;
     }
   } catch (err: any) {
@@ -194,7 +201,7 @@ async function run(argv: string[], api: OpenClawPluginApi, opts: { timeoutSec: n
     timeoutMs: opts.timeoutSec * 1000,
     cwd: opts.cwd,
     input: opts.input,
-    env: process.env,
+    env: {},
   });
 }
 
@@ -218,7 +225,7 @@ async function tryPushIfClean(api: OpenClawPluginApi, repoRoot: string) {
 
 async function runOneStory(api: OpenClawPluginApi, job: RalphJob) {
   const before = computeStoryState(job.repoPath);
-  if (!before.next) {
+  if (!before || !before.next) {
     job.status = "completed";
     return;
   }
@@ -251,6 +258,7 @@ async function runOneStory(api: OpenClawPluginApi, job: RalphJob) {
   await tryPushIfClean(api, repoRoot);
 
   const after = computeStoryState(job.repoPath);
+  if (!after) throw new Error("无法读取 prd.json");
   const commit = await git(api, repoRoot, ["log", "-1", "--pretty=%h"]).then(r => r?.stdout?.trim() || "-").catch(() => "-");
 
   // Validate that the story we attempted is now marked passes=true
@@ -315,7 +323,11 @@ export default function register(api: OpenClawPluginApi) {
           break;
         }
 
-        const remaining = computeStoryState(job.repoPath).remaining;
+        const state = computeStoryState(job.repoPath);
+        if (!state) {
+          throw new Error("无法读取 prd.json");
+        }
+        const remaining = state.remaining;
         const cap = Math.min(remaining, job.maxIterations);
         if (remaining <= 0 || job.iteration >= cap) {
           job.status = remaining <= 0 ? "completed" : "completed";
@@ -359,7 +371,7 @@ export default function register(api: OpenClawPluginApi) {
           input_schema: {
             type: "object",
             properties: {
-              repoPath: { type: "string", description: "Path to the repository" },
+              repoPath: { type: "string", description: "Path to repository" },
               tool: { type: "string", enum: ["codex", "claude"], description: "Tool to use", default: "codex" },
               maxIterations: { type: "number", description: "Maximum iterations (optional, defaults to remaining stories)" },
             },
@@ -389,7 +401,7 @@ export default function register(api: OpenClawPluginApi) {
       names: ["ralph_run", "ralph_list", "ralph_cancel"],
       handler: async (toolName: string, input: any) => {
         if (toolName === "ralph_run") {
-          const repoPath = input.repoPath;
+          const repoPath = input.repoPath ? String(input.repoPath) : "";
           const tool = (input.tool as ToolName) || ((api.pluginConfig?.defaultTool as ToolName) ?? "codex");
 
           if (!repoPath) {
@@ -408,10 +420,11 @@ export default function register(api: OpenClawPluginApi) {
             return { success: false, message: `找不到 prd.json：${prdPath(repoPath)}` };
           }
 
-          const remaining = computeStoryState(repoPath).remaining;
-          if (remaining <= 0) {
+          const state = computeStoryState(repoPath);
+          if (!state || state.remaining <= 0) {
             return { success: false, message: "没有未完成 story（passes=false 为 0）" };
           }
+          const remaining = state.remaining;
 
           const maxIterationsRaw = input.maxIterations;
           const maxIterationsParsed = maxIterationsRaw ? Number(maxIterationsRaw) : remaining;
@@ -437,7 +450,7 @@ export default function register(api: OpenClawPluginApi) {
 
           logger.info("ralph-runner: job started (via tool)", { jobId, repoPath, tool, maxIterations: finalMax });
 
-          const s = computeStoryState(repoPath);
+          const s = state;
           return {
             success: true,
             jobId,
@@ -512,10 +525,11 @@ export default function register(api: OpenClawPluginApi) {
         return { text: `tool 必须是 codex 或 claude，当前=${String(tool)}` };
       }
 
-      const remaining = computeStoryState(repoPath).remaining;
-      if (remaining <= 0) {
+      const state = computeStoryState(repoPath);
+      if (!state || state.remaining <= 0) {
         return { text: "没有未完成 story（passes=false 为 0）。" };
       }
+      const remaining = state.remaining;
 
       const maxIterationsRaw = kv.maxIterations || kv.iterations;
       const maxIterationsParsed = maxIterationsRaw ? Number(maxIterationsRaw) : remaining;
@@ -544,12 +558,11 @@ export default function register(api: OpenClawPluginApi) {
 
       logger.info("ralph-runner: job started (via command)", { jobId, repoPath, tool, maxIterations: finalMax });
 
-      const s = computeStoryState(repoPath);
-      const next = s.next;
+      const next = state.next;
       return {
         text:
           `[ralph-runner v${PLUGIN_VERSION}] ` +
-          `已启动 job=${jobId} tool=${tool} maxIterations=${finalMax} done/total=${s.done}/${s.total}` +
+          `已启动 job=${jobId} tool=${tool} maxIterations=${finalMax} done/total=${state.done}/${state.total}` +
           (next ? `\nnext=[${next.id}] ${next.title}` : "\nnext=全部完成"),
       };
     },
