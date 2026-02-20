@@ -1,4 +1,4 @@
-import type { OpenClawPluginApi, PluginCommandContext, PluginToolContext } from "openclaw/plugin-sdk";
+import type { AnyAgentTool, OpenClawPluginApi, PluginCommandContext } from "openclaw/plugin-sdk";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -474,9 +474,120 @@ export default function register(api: OpenClawPluginApi) {
     return n;
   }
 
-  // Register tool interface disabled temporarily for compatibility with current OpenClaw API
-  // Use /ralphrun, /ralphjobs, /ralphcancel commands for now.
-  logger.warn("[ralph-runner] registerTool 已暂时禁用（兼容性修复），请使用 /ralphrun 系列命令");
+  // Register tool interface (compatible API)
+  api.registerTool({
+    name: "ralph_runner",
+    label: "Ralph Runner",
+    description: "Run/list/cancel Ralph jobs. action=run|list|cancel",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        action: { type: "string", enum: ["run", "list", "cancel"] },
+        repoPath: { type: "string", description: "Repository path (required for action=run)" },
+        tool: { type: "string", enum: ["codex", "claude"], description: "Tool for action=run" },
+        maxIterations: { type: "number", description: "Max iterations for action=run" },
+        jobId: { type: "string", description: "Job ID for action=cancel" },
+      },
+      required: ["action"],
+    },
+    async execute(_toolCallId, params: any) {
+      const toResult = (payload: unknown) => ({
+        content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }],
+        details: payload,
+      });
+
+      try {
+        const action = typeof params?.action === "string" ? params.action : "";
+
+        if (action === "list") {
+          const jobList = Array.from(jobs.values()).map((j) => ({
+            jobId: j.jobId,
+            status: j.status,
+            iteration: j.iteration,
+            maxIterations: j.maxIterations,
+            tool: j.tool,
+            repoPath: j.repoPath,
+            lastError: j.lastError,
+          }));
+          return toResult({ success: true, jobs: jobList });
+        }
+
+        if (action === "cancel") {
+          const jobId = String(params?.jobId ?? "").trim();
+          if (!jobId) return toResult({ success: false, message: "缺少 jobId" });
+          if (!jobs.has(jobId)) return toResult({ success: false, message: `未找到 job：${jobId}` });
+          cancels.add(jobId);
+          const job = jobs.get(jobId)!;
+          job.status = "canceled";
+          job.updatedAt = nowIso();
+          return toResult({ success: true, message: `已取消：${jobId}` });
+        }
+
+        if (action === "run") {
+          const repoPath = String(params?.repoPath ?? "").trim();
+          const tool = (String(params?.tool ?? "") as ToolName) || ((api.pluginConfig?.defaultTool as ToolName) ?? "codex");
+
+          if (!repoPath) return toResult({ success: false, message: "缺少参数：repoPath" });
+          if (tool !== "codex" && tool !== "claude") {
+            return toResult({ success: false, message: `tool 必须是 codex 或 claude，当前=${String(tool)}` });
+          }
+          if (runningCount() >= MAX_CONCURRENCY) {
+            return toResult({ success: false, message: `任务达上限：当前并发上限=${MAX_CONCURRENCY}` });
+          }
+          if (!fs.existsSync(prdPath(repoPath))) {
+            return toResult({ success: false, message: `找不到 prd.json：${prdPath(repoPath)}` });
+          }
+
+          const state = computeStoryState(repoPath, logger);
+          if (!state || state.remaining <= 0) {
+            return toResult({ success: false, message: "没有未完成 story（passes=false 为 0）" });
+          }
+
+          const remaining = state.remaining;
+          const maxIterationsRaw = params?.maxIterations;
+          const maxIterationsParsed = maxIterationsRaw ? Number(maxIterationsRaw) : remaining;
+          const effectiveMax = Number.isFinite(maxIterationsParsed) ? Math.max(1, Math.floor(maxIterationsParsed)) : remaining;
+          const finalMax = Math.min(remaining, effectiveMax);
+
+          const jobId = `ralph_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+          const job: RalphJob = {
+            version: 1,
+            jobId,
+            createdAt: nowIso(),
+            updatedAt: nowIso(),
+            repoPath,
+            tool,
+            maxIterations: finalMax,
+            channel: "agent",
+            status: "queued",
+            iteration: 0,
+          };
+
+          jobs.set(jobId, job);
+          runJob(api, logger, jobs, cancels, job).catch((err) => {
+            logger.error(`[ralph-runner] 任务崩溃：${jobId}`, err);
+            job.status = "failed";
+            job.lastError = err instanceof Error ? err.message : String(err);
+            job.updatedAt = nowIso();
+            jobs.delete(jobId);
+          });
+
+          return toResult({
+            success: true,
+            jobId,
+            message: `[ralph-runner v${PLUGIN_VERSION}] 已启动 job=${jobId} tool=${tool} maxIterations=${finalMax}`,
+            progress: { done: state.done, total: state.total, next: state.next ?? null },
+          });
+        }
+
+        return toResult({ success: false, message: `未知 action：${String(action)}` });
+      } catch (err: any) {
+        logger.error(`[ralph-runner] tool execute error: ${err?.message || String(err)}`);
+        return toResult({ success: false, message: `处理失败：${err?.message || String(err)}` });
+      }
+    },
+  } as AnyAgentTool);
 
 // Keep command interface for backward compatibility and manual use
   api.registerCommand({
