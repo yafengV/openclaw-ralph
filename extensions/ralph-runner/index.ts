@@ -221,11 +221,12 @@ async function git(api: OpenClawPluginApi, repoRoot: string, args: string[], tim
 
 async function tryPushIfClean(api: OpenClawPluginApi, repoRoot: string) {
   try {
-    const status = await git(api, repoRoot, ["status", "--porcelain"]);
-    if ((status.stdout ?? "").trim().length > 0) return;
-    const hasOrigin = await git(api, repoRoot, ["remote", "get-url", "origin"]).catch(() => null);
+    const status = await git(api, repoRoot, ["status", "--porcelain"]).catch(() => ({ stdout: "" }));
+    const stdout = status && typeof status.stdout === "string" ? status.stdout : "";
+    if (stdout.trim().length > 0) return;
+    const hasOrigin = await git(api, repoRoot, ["remote", "get-url", "origin"]).then(r => r && typeof r.stdout === "string" && r.stdout.trim()).catch(() => null);
     if (!hasOrigin) return;
-    const branch = await git(api, repoRoot, ["branch", "--show-current"]).then(r => r?.stdout?.trim() || "").catch(() => "");
+    const branch = await git(api, repoRoot, ["branch", "--show-current"]).then(r => r && typeof r.stdout === "string" ? r.stdout.trim() : "").catch(() => "");
     if (!branch) return;
     await git(api, repoRoot, ["push", "-u", "origin", branch], 180).catch(() => null);
   } catch {
@@ -240,7 +241,9 @@ async function runOneStory(api: OpenClawPluginApi, job: RalphJob) {
     return;
   }
 
-  const repoRoot = await git(api, job.repoPath, ["rev-parse", "--show-toplevel"]).then(r => r?.stdout?.trim() || "").catch(() => "");
+  const repoRoot = await git(api, job.repoPath, ["rev-parse", "--show-toplevel"])
+    .then(r => r && typeof r.stdout === "string" ? r.stdout.trim() : "")
+    .catch(() => "");
   if (!repoRoot) throw new Error("repoPath 不是有效 git 仓库（缺少 .git）");
 
   const iterationId = `${job.jobId}#${job.iteration + 1}`;
@@ -269,7 +272,9 @@ async function runOneStory(api: OpenClawPluginApi, job: RalphJob) {
 
   const after = computeStoryState(job.repoPath);
   if (!after) throw new Error("无法读取 prd.json");
-  const commit = await git(api, repoRoot, ["log", "-1", "--pretty=%h"]).then(r => r?.stdout?.trim() || "-").catch(() => "-");
+  const commit = await git(api, repoRoot, ["log", "-1", "--pretty=%h"])
+    .then(r => r && typeof r.stdout === "string" ? r.stdout.trim() : "-")
+    .catch(() => "-");
 
   // Validate that the story we attempted is now marked passes=true
   const completedId = before.next.id;
