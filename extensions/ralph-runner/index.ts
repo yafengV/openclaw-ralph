@@ -329,7 +329,8 @@ async function runOneStory(api: OpenClawPluginApi, job: RalphJob, logger: any) {
     const res: any = await run(["sh", "-lc", codexCmd], api, { timeoutSec, cwd: repoRoot, input: promptInput });
     toolOutput = `${res?.stdout ?? ""}\n${res?.stderr ?? ""}`;
   } else if (job.tool === "cursor") {
-    const cursorCmd = process.env.RALPH_CURSOR_CMD?.trim() || "agent -p";
+    // Cursor Agent CLI: 使用 --yolo 启用自动执行模式，--force 允许自动文件编辑
+    const cursorCmd = process.env.RALPH_CURSOR_CMD?.trim() || "agent -p --yolo --force";
     const tmpPrompt = path.join(ralphDir, ".cursor-prompt.tmp");
     fs.writeFileSync(tmpPrompt, promptInput, "utf8");
     const res: any = await run(

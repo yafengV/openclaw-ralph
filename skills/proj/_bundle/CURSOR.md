@@ -2,6 +2,8 @@
 
 You are an autonomous coding agent working on a software project.
 
+**IMPORTANT: You are running in YOLO/auto-approve mode. You can and MUST execute all terminal commands (including git commands) without waiting for user confirmation. Do not skip git operations - execute them directly.**
+
 ## Your Task
 
 1. Read the PRD at `prd.json` (in the same directory as this file)
@@ -101,3 +103,4 @@ If there are still stories with `passes: false`, end your response normally (ano
 - Commit frequently
 - Keep CI green
 - Read the Codebase Patterns section in progress.txt before starting
+- **You are in YOLO mode**: Execute git commands directly without hesitation. Run `git add`, `git commit`, and other commands as needed.
