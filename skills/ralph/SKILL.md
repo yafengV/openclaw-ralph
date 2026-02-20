@@ -26,7 +26,7 @@ user-invocable: true
 
 1) 确保目录存在：`mkdir -p scripts/ralph`
 
-**注意**：ralph-runner 插件会读取 `scripts/ralph/prd.json` 和 `scripts/ralph/progress.txt`（progress.txt 会自动创建）。
+**注意**：ralph-runner 插件会读取 `scripts/ralph/prd.json`、`scripts/ralph/CODEX.md`、`scripts/ralph/CLAUDE.md`（`progress.txt` 会自动创建）。若模板不存在，需要先通过 `proj` 初始化拷贝 `_bundle` 模板。
 
 ---
 
@@ -70,7 +70,7 @@ user-invocable: true
 
 `ralph` skill **不执行** Ralph。当用户要进入迭代开发阶段时：
 - 引导用户使用 **ralph-runner 插件**
-- 工具调用：`ralph_run(repoPath, tool="codex|claude", maxIterations?)`
+- 工具调用：`ralph_runner(action="run", repoPath, tool="codex|claude", maxIterations?)`
 - 或命令：`/ralphrun repoPath=... tool=codex|claude maxIterations=...`
 
 ---

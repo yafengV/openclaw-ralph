@@ -35,15 +35,21 @@ user-invocable: true
 - `git remote add origin <remote>`
 - 尽量确保默认分支为 `main`：`git branch -M main`
 
-5) 生成基础 README（如不存在）：
+5) 复制 Ralph 模板（必须）：
+- 源目录：`<openclaw-ralph>/skills/ralph/_bundle/`
+- 目标目录：`${projectPath}/scripts/ralph/`
+- 需要复制：`CODEX.md`、`CLAUDE.md`
+- 若目标已存在同名文件：默认不覆盖（保留用户已有版本）
+
+6) 生成基础 README（如不存在）：
 - 写入项目名 + 简短说明
 
-6) 首次提交（默认开启）：
+7) 首次提交（默认开启）：
 - `git add -A`
 - `git commit -m "chore: init project"`
   - 若失败（常见原因：未配置 `user.name/user.email`）：提示用户如何配置，并继续输出项目路径（不要硬失败）。
 
-7) 远程 push（默认开启；仅当提供 remote 且 commit 成功时执行）：
+8) 远程 push（默认开启；仅当提供 remote 且 commit 成功时执行）：
 - `git push -u origin main`
   - 如果 push 失败（权限/不存在/网络）：提示用户错误信息与下一步排查。
 
@@ -54,4 +60,4 @@ user-invocable: true
 - 是否已绑定 remote
 - 下一步如何使用：
   - 使用 `prd` skill 生成 `scripts/ralph/prd.json`
-  - 然后使用 ralph-runner 插件运行：通过工具 `ralph_run` 或命令 `/ralphrun`
+  - 然后使用 ralph-runner 插件运行：通过工具 `ralph_runner(action="run", ...)` 或命令 `/ralphrun`
