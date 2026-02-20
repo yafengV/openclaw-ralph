@@ -97,6 +97,11 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function isCompleteOutput(output: string) {
+  const tail = String(output || "").split(/\r?\n/).slice(-5);
+  return tail.some((line) => line.trim() === "<promise>COMPLETE</promise>");
+}
+
 function callbackStatePath() {
   const home = process.env.HOME || "/tmp";
   return path.join(home, ".openclaw", "extensions", "ralph-runner", "state.json");
@@ -355,30 +360,30 @@ async function runOneStory(api: OpenClawPluginApi, job: RalphJob, logger: any) {
     throw new Error("repoPath 不是有效 git 仓库（缺少 .git）");
   }
 
+  const ralphDir = path.join(repoRoot, "scripts", "ralph");
+  const promptPath = path.join(ralphDir, job.tool === "codex" ? "CODEX.md" : "CLAUDE.md");
+  if (!fs.existsSync(promptPath)) {
+    throw new Error(`缺少提示模板：${promptPath}。请通过 proj 初始化拷贝 CODEX.md/CLAUDE.md 到 scripts/ralph/`);
+  }
+  const promptInput = fs.readFileSync(promptPath, "utf8");
+
   logger.info(`[ralph-runner] [${job.jobId}] 仓库根目录：${repoRoot}`);
-
-  const iterationId = `${job.jobId}#${job.iteration + 1}`;
-
-  // Run tool (single iteration)
-  const timeoutSec = Number(api.pluginConfig?.iterationTimeoutSec ?? 1800);
-  logger.info(`[ralph-runner][ITER_EXEC] job=${job.jobId} iter=${job.iteration + 1} tool=${job.tool} timeoutSec=${timeoutSec}`);
+  logger.info(`[ralph-runner][ITER_EXEC] job=${job.jobId} iter=${job.iteration + 1} tool=${job.tool} prompt=${promptPath}`);
   await sendText(api, job, `[ralph-runner] 开始迭代 ${job.iteration + 1}：执行 ${job.tool}`);
 
+  const timeoutSec = Number(api.pluginConfig?.iterationTimeoutSec ?? 1800);
+  let toolOutput = "";
   if (job.tool === "codex") {
-    await run(
-      ["codex", "exec", "--full-auto", "-C", repoRoot, "--add-dir", path.join(repoRoot, "scripts", "ralph")],
-      api,
-      { timeoutSec, cwd: repoRoot, input: CODEX_PROMPT },
-    );
+    const codexCmd = process.env.RALPH_CODEX_CMD?.trim() || "codex exec --full-auto";
+    const res: any = await run(["sh", "-lc", codexCmd], api, { timeoutSec, cwd: repoRoot, input: promptInput });
+    toolOutput = `${res?.stdout ?? ""}\n${res?.stderr ?? ""}`;
   } else {
-    const args = [
-      "--dangerously-skip-permissions",
-      "--print",
-      "--verbose",
-      "--output-format=stream-json",
-      "--include-partial-messages",
-    ];
-    await run(["claude", ...args], api, { timeoutSec, cwd: repoRoot, input: CLAUDE_PROMPT });
+    const res: any = await run(["claude", "--dangerously-skip-permissions", "--print"], api, {
+      timeoutSec,
+      cwd: repoRoot,
+      input: promptInput,
+    });
+    toolOutput = `${res?.stdout ?? ""}\n${res?.stderr ?? ""}`;
   }
 
   logger.info(`[ralph-runner][ITER_POST] job=${job.jobId} iter=${job.iteration + 1} step=tool_done`);
@@ -394,45 +399,46 @@ async function runOneStory(api: OpenClawPluginApi, job: RalphJob, logger: any) {
     .then(r => r && typeof r.stdout === "string" ? r.stdout.trim() : "-")
     .catch(() => "-");
 
-  logger.info(`[ralph-runner] [${job.jobId}] 当前 commit：${commit}`);
+  job.iteration += 1;
+  job.updatedAt = nowIso();
+  job.lastCompletedCommit = commit;
 
-  // Validate that the story we attempted is now marked passes=true
-  const completedId = before.next.id;
-  const wasMarked = after.passesById[completedId] === true;
-  if (!wasMarked) {
-    logger.error(`[ralph-runner] [${job.jobId}] 该轮执行后 story 未标记完成：${completedId}`);
-    throw new Error(`该轮执行后 story 未标记完成：${completedId}`);
+  const doneDelta = after.done - before.done;
+  const completeByMarker = isCompleteOutput(toolOutput);
+  if (doneDelta > 0) {
+    const completedId = before.next?.id ?? "-";
+    const completedTitle = before.next?.title ?? "(unknown)";
+    job.lastCompletedStoryId = completedId;
+    await sendText(
+      api,
+      job,
+      formatProgress({
+        completed: {
+          id: completedId,
+          title: completedTitle,
+          sessionKey: `${job.jobId}#${job.iteration}`,
+          commit,
+          done: after.done,
+          total: after.total,
+        },
+        next: after.next
+          ? {
+              id: after.next.id,
+              title: after.next.title,
+              sessionKey: `${job.jobId}#${job.iteration + 1}`,
+            }
+          : undefined,
+      }),
+    );
+  } else {
+    await sendText(api, job, `[ralph-runner] 迭代 ${job.iteration} 完成（无新增通过），done/total ${after.done}/${after.total}`);
   }
 
-  const completed = {
-    id: completedId,
-    title: before.next.title,
-    sessionKey: iterationId,
-    commit,
-    done: after.done,
-    total: after.total,
-  };
+  logger.info(`[ralph-runner][ITER_DONE] job=${job.jobId} iter=${job.iteration} done=${after.done}/${after.total} delta=${doneDelta} commit=${commit} marker=${completeByMarker}`);
 
-  const next = after.next
-    ? {
-        id: after.next.id,
-        title: after.next.title,
-        sessionKey: `${job.jobId}#${job.iteration + 2}`,
-      }
-    : undefined;
-
-  job.iteration += 1;
-  job.lastCompletedStoryId = completed.id;
-  job.lastCompletedCommit = completed.commit;
-  job.updatedAt = nowIso();
-
-  await sendText(api, job, formatProgress({ completed, next }));
-
-  logger.info(`[ralph-runner][ITER_DONE] job=${job.jobId} iter=${job.iteration} done=${after.done}/${after.total} commit=${commit}`);
-
-  if (!after.next || after.done === after.total) {
+  if (completeByMarker || !after.next || after.done === after.total) {
     job.status = "completed";
-    logger.info(`[ralph-runner][JOB_DONE] job=${job.jobId} total=${after.total} done=${after.done}`);
+    logger.info(`[ralph-runner][JOB_DONE] job=${job.jobId} total=${after.total} done=${after.done} marker=${completeByMarker}`);
   }
 }
 
@@ -631,11 +637,12 @@ export default function register(api: OpenClawPluginApi) {
             return toResult({ success: false, message: "没有未完成 story（passes=false 为 0）" });
           }
 
-          const remaining = state.remaining;
+          const defaultMax = Number(api.pluginConfig?.maxIterationsDefault ?? 10);
           const maxIterationsRaw = params?.maxIterations;
-          const maxIterationsParsed = maxIterationsRaw ? Number(maxIterationsRaw) : remaining;
-          const effectiveMax = Number.isFinite(maxIterationsParsed) ? Math.max(1, Math.floor(maxIterationsParsed)) : remaining;
-          const finalMax = Math.min(remaining, effectiveMax);
+          const maxIterationsParsed = maxIterationsRaw ? Number(maxIterationsRaw) : defaultMax;
+          const finalMax = Number.isFinite(maxIterationsParsed)
+            ? Math.max(1, Math.floor(maxIterationsParsed))
+            : Math.max(1, Math.floor(defaultMax));
 
           const jobId = `ralph_${Date.now()}_${Math.random().toString(16).slice(2)}`;
           const explicitChannel = typeof params?.channel === "string" && params.channel.trim() ? params.channel.trim() : "";
@@ -744,12 +751,13 @@ export default function register(api: OpenClawPluginApi) {
         if (!state || state.remaining <= 0) {
           return { text: "没有未完成 story（passes=false 为 0）。" };
         }
-        const remaining = state.remaining;
+        const defaultMax = Number(api.pluginConfig?.maxIterationsDefault ?? 10);
 
         const maxIterationsRaw = kv.maxIterations || kv.iterations;
-        const maxIterationsParsed = maxIterationsRaw ? Number(maxIterationsRaw) : remaining;
-        const effectiveMax = Number.isFinite(maxIterationsParsed) ? Math.max(1, Math.floor(maxIterationsParsed)) : remaining;
-        const finalMax = Math.min(remaining, effectiveMax);
+        const maxIterationsParsed = maxIterationsRaw ? Number(maxIterationsRaw) : defaultMax;
+        const finalMax = Number.isFinite(maxIterationsParsed)
+          ? Math.max(1, Math.floor(maxIterationsParsed))
+          : Math.max(1, Math.floor(defaultMax));
 
         const jobId = `ralph_${Date.now()}_${Math.random().toString(16).slice(2)}`;
         const job: RalphJob = {
