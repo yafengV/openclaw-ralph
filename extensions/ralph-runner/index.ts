@@ -397,10 +397,10 @@ async function runJob(api: OpenClawPluginApi, logger: any, jobs: Map<string, Ral
       }
 
       const remaining = state.remaining;
-      const cap = Math.min(remaining, job.maxIterations);
+      const cap = job.maxIterations;
       logger.info(`[ralph-runner][JOB_LOOP] job=${job.jobId} iter=${job.iteration + 1} remaining=${remaining} cap=${cap}`);
       if (remaining <= 0 || job.iteration >= cap) {
-        job.status = remaining <= 0 ? "completed" : "completed";
+        job.status = "completed";
         await sendText(api, job, `所有任务完成！total=${state.total} done=${state.done}`);
         break;
       }
@@ -582,6 +582,9 @@ export default function register(api: OpenClawPluginApi) {
           };
 
           jobs.set(jobId, job);
+          if (!to) {
+            logger.warn(`[ralph-runner] job=${jobId} 未提供 to，进度只会写日志不会消息回传`);
+          }
           runJob(api, logger, jobs, cancels, job).catch((err) => {
             logger.error(`[ralph-runner] 任务崩溃：${jobId}`, err);
             job.status = "failed";
@@ -594,6 +597,9 @@ export default function register(api: OpenClawPluginApi) {
             success: true,
             jobId,
             message: `[ralph-runner v${PLUGIN_VERSION}] 已启动 job=${jobId} tool=${tool} maxIterations=${finalMax}`,
+            callback: to
+              ? { enabled: true, channel, to, accountId: accountId ?? null, messageThreadId: messageThreadId ?? null }
+              : { enabled: false, reason: "未提供 channel/to，进度仅写入 gateway 日志" },
             progress: { done: state.done, total: state.total, next: state.next ?? null },
           });
         }
