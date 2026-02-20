@@ -223,30 +223,43 @@ async function sendText(api: OpenClawPluginApi, job: RalphJob, text: string) {
       `[ralph-runner][SEND_TRY] job=${job.jobId} channel=${job.channel} to=${target} accountId=${job.accountId ?? "-"} messageThreadId=${job.messageThreadId ?? "-"}`,
     );
 
-    const channel = api.runtime[job.channel as keyof typeof api.runtime];
-    if (channel && typeof channel === "object" && "sendMessage" in channel) {
-      const channelObj = channel as any;
-      if (typeof channelObj.sendMessage === "function") {
-        await channelObj.sendMessage(target, text, {
+    // 新版 OpenClaw 运行时优先从 runtime.channel.<channel> 取发送实现
+    const runtimeChannel = (api.runtime as any)?.channel?.[job.channel];
+    if (runtimeChannel && typeof runtimeChannel === "object") {
+      if (typeof runtimeChannel.sendMessage === "function") {
+        await runtimeChannel.sendMessage(target, text, {
           accountId: job.accountId,
           messageThreadId: job.messageThreadId,
         });
-        api.logger.info(`[ralph-runner][SEND_OK] job=${job.jobId} via=runtime.${job.channel}.sendMessage to=${target}`);
+        api.logger.info(`[ralph-runner][SEND_OK] job=${job.jobId} via=runtime.channel.${job.channel}.sendMessage to=${target}`);
+        return;
+      }
+
+      // telegram 专用低层接口
+      if (job.channel === "telegram" && typeof runtimeChannel.sendMessageTelegram === "function") {
+        await runtimeChannel.sendMessageTelegram(target, text, {
+          accountId: job.accountId,
+          messageThreadId: job.messageThreadId,
+        });
+        api.logger.info(`[ralph-runner][SEND_OK] job=${job.jobId} via=runtime.channel.telegram.sendMessageTelegram to=${target}`);
         return;
       }
     }
 
-    // 降级：尝试 telegram 的直接方法
-    if (job.channel === "telegram" && api.runtime.telegram && typeof api.runtime.telegram.sendMessageTelegram === "function") {
-      await api.runtime.telegram.sendMessageTelegram(target, text, {
+    // 兼容旧路径（若存在）
+    const legacyChannel = (api.runtime as any)?.[job.channel];
+    if (legacyChannel && typeof legacyChannel === "object" && typeof legacyChannel.sendMessage === "function") {
+      await legacyChannel.sendMessage(target, text, {
         accountId: job.accountId,
         messageThreadId: job.messageThreadId,
       });
-      api.logger.info(`[ralph-runner][SEND_OK] job=${job.jobId} via=runtime.telegram.sendMessageTelegram to=${target}`);
+      api.logger.info(`[ralph-runner][SEND_OK] job=${job.jobId} via=runtime.${job.channel}.sendMessage to=${target}`);
       return;
     }
 
-    api.logger.warn(`[ralph-runner][SEND_FALLBACK] job=${job.jobId} no sendMessage implementation found for channel=${job.channel}`);
+    const runtimeKeys = Object.keys((api.runtime as any) ?? {});
+    const channelKeys = Object.keys(((api.runtime as any)?.channel) ?? {});
+    api.logger.warn(`[ralph-runner][SEND_FALLBACK] job=${job.jobId} no sender for channel=${job.channel} runtimeKeys=${runtimeKeys.join(",") || "none"} channelKeys=${channelKeys.join(",") || "none"}`);
   } catch (err: any) {
     // 发送消息失败不影响任务执行，只记录错误
     api.logger.error(`ralph-runner [${job.jobId}] sendText failed: ${err?.message || String(err)}`);
