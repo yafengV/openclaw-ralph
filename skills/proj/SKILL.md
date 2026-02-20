@@ -36,7 +36,7 @@ user-invocable: true
 - 尽量确保默认分支为 `main`：`git branch -M main`
 
 5) 复制 Ralph 模板（必须）：
-- 源目录：`<openclaw-ralph>/skills/ralph/_bundle/`
+- 源目录：`<openclaw-ralph>/skills/proj/_bundle/`
 - 目标目录：`${projectPath}/scripts/ralph/`
 - 需要复制：`CODEX.md`、`CLAUDE.md`
 - 若目标已存在同名文件：默认不覆盖（保留用户已有版本）
