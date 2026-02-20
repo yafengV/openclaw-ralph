@@ -98,7 +98,7 @@ function parseKvArgs(raw: any): Record<string, string> {
     const idx = tokenStr.indexOf("=");
     if (idx <= 0) continue;
     const k = tokenStr.slice(0, idx).trim();
-    const v = idx + 1 < tokenStr.length ? tokenStr.slice(idx + 1).trim() : "";
+    const v = tokenStr.slice(idx + 1).trim();
     if (!k) continue;
     out[k] = v;
   }
@@ -445,18 +445,6 @@ async function runJob(api: OpenClawPluginApi, logger: any, jobs: Map<string, Ral
 export default function register(api: OpenClawPluginApi) {
   const logger = api.logger;
 
-  // 全局错误捕获，帮助定位问题
-  const originalHandler = (err: any) => {
-    logger.error(`[ralph-runner] 未捕获的异常：`, err);
-    logger.error(`[ralph-runner] 堆栈：`, err?.stack || "无堆栈信息");
-  };
-
-  // 捕获未处理的 Promise rejection
-  if (typeof process !== 'undefined' && process.on) {
-    process.on('unhandledRejection', originalHandler);
-    process.on('uncaughtException', originalHandler);
-  }
-
   logger.info(`[ralph-runner] 插件加载 v${PLUGIN_VERSION}`);
 
   const MAX_CONCURRENCY = 3;
@@ -489,10 +477,9 @@ export default function register(api: OpenClawPluginApi) {
   // Register tool interface for agent calls
   api.registerTool(
     (ctx: PluginToolContext) => {
-      try {
-        logger.info("[ralph-runner] 注册工具接口", { ctx });
-        return {
-          ralph_run: {
+      logger.info("[ralph-runner] 注册工具接口");
+      return {
+        ralph_run: {
           description: "Run Ralph background job. Parameters: repoPath (string), tool (codex|claude, default=codex), maxIterations (number, optional). Returns: { success: boolean, jobId?: string, message?: string }",
           input_schema: {
             type: "object",
@@ -522,11 +509,6 @@ export default function register(api: OpenClawPluginApi) {
           },
         },
       };
-    } catch (err: any) {
-      logger.error(`[ralph-runner] 工具注册失败：`, err);
-      logger.error(`[ralph-runner] 工具注册堆栈：`, err?.stack || "无堆栈信息");
-      // 返回一个空的工具定义，避免插件加载失败
-      return {};
     },
     {
       names: ["ralph_run", "ralph_list", "ralph_cancel"],
@@ -785,7 +767,7 @@ export default function register(api: OpenClawPluginApi) {
         }
 
         const kv = parseKvArgs(ctx.args);
-        const jobId = kv.jobId || kv.id || (ctx.args ? ctx.args.trim() : "");
+        const jobId = kv.jobId || kv.id || ctx.args.trim();
         if (!jobId) return { text: "缺少 jobId。示例：/ralphcancel jobId=ralph_xxx" };
         if (!jobs.has(jobId)) return { text: `未找到 job：${jobId}` };
         cancels.add(jobId);
