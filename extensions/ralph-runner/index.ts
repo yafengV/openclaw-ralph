@@ -40,6 +40,13 @@ type RalphJob = {
   lastError?: string;
 };
 
+type CallbackTarget = {
+  channel: string;
+  to: string;
+  accountId?: string;
+  messageThreadId?: number;
+};
+
 const CODEX_PROMPT = `# Ralph Agent Instructions
 
 你是一个"自动化编码代理"，要在一个真实的软件项目里按 PRD（prd.json）逐条完成 user story。
@@ -88,6 +95,39 @@ const CLAUDE_PROMPT = `# Ralph Agent Instructions (Claude Code)
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function callbackStatePath() {
+  const home = process.env.HOME || "/tmp";
+  return path.join(home, ".openclaw", "extensions", "ralph-runner", "state.json");
+}
+
+function readCallbackTarget(): CallbackTarget | null {
+  try {
+    const p = callbackStatePath();
+    if (!fs.existsSync(p)) return null;
+    const raw = JSON.parse(fs.readFileSync(p, "utf8"));
+    if (!raw || typeof raw !== "object") return null;
+    const channel = typeof raw.channel === "string" ? raw.channel.trim() : "";
+    const to = typeof raw.to === "string" ? raw.to.trim() : "";
+    if (!channel || !to) return null;
+    const accountId = typeof raw.accountId === "string" && raw.accountId.trim() ? raw.accountId.trim() : undefined;
+    const messageThreadId = Number.isFinite(Number(raw.messageThreadId)) ? Number(raw.messageThreadId) : undefined;
+    return { channel, to, accountId, messageThreadId };
+  } catch {
+    return null;
+  }
+}
+
+function writeCallbackTarget(target: CallbackTarget | null) {
+  const p = callbackStatePath();
+  const dir = path.dirname(p);
+  fs.mkdirSync(dir, { recursive: true });
+  if (!target) {
+    if (fs.existsSync(p)) fs.unlinkSync(p);
+    return;
+  }
+  fs.writeFileSync(p, JSON.stringify(target, null, 2), "utf8");
 }
 
 function parseKvArgs(raw: any): Record<string, string> {
@@ -560,10 +600,23 @@ export default function register(api: OpenClawPluginApi) {
           const finalMax = Math.min(remaining, effectiveMax);
 
           const jobId = `ralph_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-          const channel = typeof params?.channel === "string" && params.channel.trim() ? params.channel.trim() : "agent";
-          const to = typeof params?.to === "string" && params.to.trim() ? params.to.trim() : undefined;
-          const accountId = typeof params?.accountId === "string" && params.accountId.trim() ? params.accountId.trim() : undefined;
-          const messageThreadId = Number.isFinite(Number(params?.messageThreadId)) ? Number(params.messageThreadId) : undefined;
+          const explicitChannel = typeof params?.channel === "string" && params.channel.trim() ? params.channel.trim() : "";
+          const explicitTo = typeof params?.to === "string" && params.to.trim() ? params.to.trim() : "";
+          const explicitAccountId = typeof params?.accountId === "string" && params.accountId.trim() ? params.accountId.trim() : undefined;
+          const explicitThreadId = Number.isFinite(Number(params?.messageThreadId)) ? Number(params.messageThreadId) : undefined;
+
+          const bound = readCallbackTarget();
+          const channel = explicitChannel || bound?.channel || "";
+          const to = explicitTo || bound?.to || "";
+          const accountId = explicitAccountId ?? bound?.accountId;
+          const messageThreadId = explicitThreadId ?? bound?.messageThreadId;
+
+          if (!channel || !to) {
+            return toResult({
+              success: false,
+              message: "缺少 channel/to。可在参数里传 channel=... to=...，或先用 /ralphbind 绑定默认回传目标。",
+            });
+          }
 
           const job: RalphJob = {
             version: 1,
@@ -745,6 +798,43 @@ export default function register(api: OpenClawPluginApi) {
         return { text: `已取消：${jobId}` };
       } catch (err: any) {
         logger.error(`[ralph-runner] 取消命令失败：${err?.message || String(err)}`);
+        return { text: `处理失败：${err?.message || String(err)}` };
+      }
+    },
+  });
+
+  api.registerCommand({
+    name: "ralphbind",
+    description: "Bind default callback target from current session. Usage: /ralphbind [show|clear]",
+    acceptsArgs: true,
+    requireAuth: true,
+    handler: async (ctx: PluginCommandContext) => {
+      try {
+        const mode = typeof ctx.args === "string" ? ctx.args.trim().toLowerCase() : "";
+        if (mode === "show") {
+          const current = readCallbackTarget();
+          if (!current) return { text: "当前未绑定回传目标。" };
+          return { text: `已绑定：channel=${current.channel} to=${current.to}${current.accountId ? ` accountId=${current.accountId}` : ""}${current.messageThreadId != null ? ` messageThreadId=${current.messageThreadId}` : ""}` };
+        }
+        if (mode === "clear") {
+          writeCallbackTarget(null);
+          return { text: "已清除 ralph 默认回传绑定。" };
+        }
+
+        if (!ctx.channel || !ctx.to) {
+          return { text: "当前会话无 channel/to，无法绑定。请改用参数传 channel/to。" };
+        }
+
+        const target: CallbackTarget = {
+          channel: String(ctx.channel),
+          to: String(ctx.to),
+          accountId: ctx.accountId,
+          messageThreadId: ctx.messageThreadId,
+        };
+        writeCallbackTarget(target);
+        return { text: `已绑定默认回传：channel=${target.channel} to=${target.to}` };
+      } catch (err: any) {
+        logger.error(`[ralph-runner] ralphbind 失败：${err?.message || String(err)}`);
         return { text: `处理失败：${err?.message || String(err)}` };
       }
     },
