@@ -208,29 +208,45 @@ function computeStoryState(repoPath: string, logger: any): {
 async function sendText(api: OpenClawPluginApi, job: RalphJob, text: string) {
   try {
     if (!job.to) {
-      // 工具调用时没有 channel 信息，使用 logger 记录
-      api.logger.info(`ralph-runner [${job.jobId}]: ${text}`);
+      // 没有回传目标，降级到日志
+      api.logger.info(`[ralph-runner][SEND_SKIP] job=${job.jobId} reason=no_to text=${text}`);
       return;
     }
+
+    // 兼容 telegram:123 / channel:id 形式
+    let target = String(job.to);
+    if (job.channel === "telegram" && target.startsWith("telegram:")) {
+      target = target.slice("telegram:".length);
+    }
+
+    api.logger.info(
+      `[ralph-runner][SEND_TRY] job=${job.jobId} channel=${job.channel} to=${target} accountId=${job.accountId ?? "-"} messageThreadId=${job.messageThreadId ?? "-"}`,
+    );
+
     const channel = api.runtime[job.channel as keyof typeof api.runtime];
     if (channel && typeof channel === "object" && "sendMessage" in channel) {
       const channelObj = channel as any;
       if (typeof channelObj.sendMessage === "function") {
-        await channelObj.sendMessage(job.to, text, {
+        await channelObj.sendMessage(target, text, {
           accountId: job.accountId,
           messageThreadId: job.messageThreadId,
         });
+        api.logger.info(`[ralph-runner][SEND_OK] job=${job.jobId} via=runtime.${job.channel}.sendMessage to=${target}`);
         return;
       }
     }
+
     // 降级：尝试 telegram 的直接方法
     if (job.channel === "telegram" && api.runtime.telegram && typeof api.runtime.telegram.sendMessageTelegram === "function") {
-      await api.runtime.telegram.sendMessageTelegram(job.to, text, {
+      await api.runtime.telegram.sendMessageTelegram(target, text, {
         accountId: job.accountId,
         messageThreadId: job.messageThreadId,
       });
+      api.logger.info(`[ralph-runner][SEND_OK] job=${job.jobId} via=runtime.telegram.sendMessageTelegram to=${target}`);
       return;
     }
+
+    api.logger.warn(`[ralph-runner][SEND_FALLBACK] job=${job.jobId} no sendMessage implementation found for channel=${job.channel}`);
   } catch (err: any) {
     // 发送消息失败不影响任务执行，只记录错误
     api.logger.error(`ralph-runner [${job.jobId}] sendText failed: ${err?.message || String(err)}`);
