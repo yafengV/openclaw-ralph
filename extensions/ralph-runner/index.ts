@@ -98,7 +98,7 @@ function parseKvArgs(raw: any): Record<string, string> {
     const idx = tokenStr.indexOf("=");
     if (idx <= 0) continue;
     const k = tokenStr.slice(0, idx).trim();
-    const v = tokenStr.slice(idx + 1).trim();
+    const v = idx + 1 < tokenStr.length ? tokenStr.slice(idx + 1).trim() : "";
     if (!k) continue;
     out[k] = v;
   }
@@ -767,7 +767,7 @@ export default function register(api: OpenClawPluginApi) {
         }
 
         const kv = parseKvArgs(ctx.args);
-        const jobId = kv.jobId || kv.id || ctx.args.trim();
+        const jobId = kv.jobId || kv.id || (ctx.args ? ctx.args.trim() : "");
         if (!jobId) return { text: "缺少 jobId。示例：/ralphcancel jobId=ralph_xxx" };
         if (!jobs.has(jobId)) return { text: `未找到 job：${jobId}` };
         cancels.add(jobId);
