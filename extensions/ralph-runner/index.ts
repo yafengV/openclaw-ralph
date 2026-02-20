@@ -634,6 +634,8 @@ export default function register(api: OpenClawPluginApi) {
             iteration: 0,
           };
 
+          logger.info(`[ralph-runner][JOB_TARGET] job=${jobId} channel=${channel} to=${to} accountId=${accountId ?? "-"} messageThreadId=${messageThreadId ?? "-"}`);
+
           jobs.set(jobId, job);
           if (!to) {
             logger.warn(`[ralph-runner] job=${jobId} 未提供 to，进度只会写日志不会消息回传`);
@@ -727,6 +729,8 @@ export default function register(api: OpenClawPluginApi) {
           status: "queued",
           iteration: 0,
         };
+
+        logger.info(`[ralph-runner][JOB_TARGET] job=${jobId} channel=${job.channel} to=${job.to ?? "-"} accountId=${job.accountId ?? "-"} messageThreadId=${job.messageThreadId ?? "-"}`);
 
         jobs.set(jobId, job);
         logger.info(`[ralph-runner] 任务创建（命令）：${jobId} ${repoPath} ${tool} max=${finalMax}`);
