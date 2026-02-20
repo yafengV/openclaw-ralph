@@ -583,12 +583,11 @@ export default function register(api: OpenClawPluginApi) {
             return toResult({ success: false, message: "没有未完成 story（passes=false 为 0）" });
           }
 
-          const defaultMax = Number(api.pluginConfig?.maxIterationsDefault ?? 10);
+          const remaining = state.remaining;
           const maxIterationsRaw = params?.maxIterations;
-          const maxIterationsParsed = maxIterationsRaw ? Number(maxIterationsRaw) : defaultMax;
-          const finalMax = Number.isFinite(maxIterationsParsed)
-            ? Math.max(1, Math.floor(maxIterationsParsed))
-            : Math.max(1, Math.floor(defaultMax));
+          const maxIterationsParsed = maxIterationsRaw ? Number(maxIterationsRaw) : remaining;
+          const effectiveMax = Number.isFinite(maxIterationsParsed) ? Math.max(1, Math.floor(maxIterationsParsed)) : remaining;
+          const finalMax = Math.min(remaining, effectiveMax);
 
           const jobId = `ralph_${Date.now()}_${Math.random().toString(16).slice(2)}`;
           const explicitChannel = typeof params?.channel === "string" && params.channel.trim() ? params.channel.trim() : "";
@@ -697,13 +696,12 @@ export default function register(api: OpenClawPluginApi) {
         if (!state || state.remaining <= 0) {
           return { text: "没有未完成 story（passes=false 为 0）。" };
         }
-        const defaultMax = Number(api.pluginConfig?.maxIterationsDefault ?? 10);
 
+        const remaining = state.remaining;
         const maxIterationsRaw = kv.maxIterations || kv.iterations;
-        const maxIterationsParsed = maxIterationsRaw ? Number(maxIterationsRaw) : defaultMax;
-        const finalMax = Number.isFinite(maxIterationsParsed)
-          ? Math.max(1, Math.floor(maxIterationsParsed))
-          : Math.max(1, Math.floor(defaultMax));
+        const maxIterationsParsed = maxIterationsRaw ? Number(maxIterationsRaw) : remaining;
+        const effectiveMax = Number.isFinite(maxIterationsParsed) ? Math.max(1, Math.floor(maxIterationsParsed)) : remaining;
+        const finalMax = Math.min(remaining, effectiveMax);
 
         const jobId = `ralph_${Date.now()}_${Math.random().toString(16).slice(2)}`;
         const job: RalphJob = {
