@@ -260,7 +260,7 @@ async function tryPushIfClean(api: OpenClawPluginApi, repoRoot: string, logger: 
 }
 
 async function runOneStory(api: OpenClawPluginApi, job: RalphJob, logger: any) {
-  logger.info(`[ralph-runner] [${job.jobId}] 开始第 ${job.iteration + 1} 次迭代`);
+  logger.info(`[ralph-runner][ITER_START] job=${job.jobId} iter=${job.iteration + 1}`);
 
   const before = computeStoryState(job.repoPath, logger);
   if (!before || !before.next) {
@@ -283,7 +283,8 @@ async function runOneStory(api: OpenClawPluginApi, job: RalphJob, logger: any) {
 
   // Run tool (single iteration)
   const timeoutSec = Number(api.pluginConfig?.iterationTimeoutSec ?? 1800);
-  logger.info(`[ralph-runner] [${job.jobId}] 执行 ${job.tool}，超时 ${timeoutSec}s`);
+  logger.info(`[ralph-runner][ITER_EXEC] job=${job.jobId} iter=${job.iteration + 1} tool=${job.tool} timeoutSec=${timeoutSec}`);
+  await sendText(api, job, `[ralph-runner] 开始迭代 ${job.iteration + 1}：执行 ${job.tool}`);
 
   if (job.tool === "codex") {
     await run(
@@ -302,7 +303,7 @@ async function runOneStory(api: OpenClawPluginApi, job: RalphJob, logger: any) {
     await run(["claude", ...args], api, { timeoutSec, cwd: repoRoot, input: CLAUDE_PROMPT });
   }
 
-  logger.info(`[ralph-runner] [${job.jobId}] 工具执行完成，尝试 push`);
+  logger.info(`[ralph-runner][ITER_POST] job=${job.jobId} iter=${job.iteration + 1} step=tool_done`);
 
   await tryPushIfClean(api, repoRoot, logger);
 
@@ -349,17 +350,20 @@ async function runOneStory(api: OpenClawPluginApi, job: RalphJob, logger: any) {
 
   await sendText(api, job, formatProgress({ completed, next }));
 
+  logger.info(`[ralph-runner][ITER_DONE] job=${job.jobId} iter=${job.iteration} done=${after.done}/${after.total} commit=${commit}`);
+
   if (!after.next || after.done === after.total) {
     job.status = "completed";
-    logger.info(`[ralph-runner] [${job.jobId}] 所有任务已完成！total=${state.total} done=${state.done}`);
+    logger.info(`[ralph-runner][JOB_DONE] job=${job.jobId} total=${after.total} done=${after.done}`);
   }
 }
 
 async function runJob(api: OpenClawPluginApi, logger: any, jobs: Map<string, RalphJob>, cancels: Set<string>, job: RalphJob) {
-  logger.info(`[ralph-runner] [${job.jobId}] 任务开始执行`);
+  logger.info(`[ralph-runner][JOB_START] job=${job.jobId} tool=${job.tool} repo=${job.repoPath} maxIterations=${job.maxIterations}`);
 
   job.status = "running";
   job.updatedAt = nowIso();
+  await sendText(api, job, `[ralph-runner] 任务开始：job=${job.jobId} tool=${job.tool} maxIterations=${job.maxIterations}`);
 
   const failedIterations: number[] = [];
   const prdPathFull = prdPath(job.repoPath);
@@ -394,6 +398,7 @@ async function runJob(api: OpenClawPluginApi, logger: any, jobs: Map<string, Ral
 
       const remaining = state.remaining;
       const cap = Math.min(remaining, job.maxIterations);
+      logger.info(`[ralph-runner][JOB_LOOP] job=${job.jobId} iter=${job.iteration + 1} remaining=${remaining} cap=${cap}`);
       if (remaining <= 0 || job.iteration >= cap) {
         job.status = remaining <= 0 ? "completed" : "completed";
         await sendText(api, job, `所有任务完成！total=${state.total} done=${state.done}`);
@@ -488,6 +493,10 @@ export default function register(api: OpenClawPluginApi) {
         tool: { type: "string", enum: ["codex", "claude"], description: "Tool for action=run" },
         maxIterations: { type: "number", description: "Max iterations for action=run" },
         jobId: { type: "string", description: "Job ID for action=cancel" },
+        channel: { type: "string", description: "回传消息的渠道（如 telegram）" },
+        to: { type: "string", description: "回传消息目标（chat id）" },
+        accountId: { type: "string", description: "可选账号 id" },
+        messageThreadId: { type: "number", description: "可选线程 id" },
       },
       required: ["action"],
     },
@@ -551,6 +560,11 @@ export default function register(api: OpenClawPluginApi) {
           const finalMax = Math.min(remaining, effectiveMax);
 
           const jobId = `ralph_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+          const channel = typeof params?.channel === "string" && params.channel.trim() ? params.channel.trim() : "agent";
+          const to = typeof params?.to === "string" && params.to.trim() ? params.to.trim() : undefined;
+          const accountId = typeof params?.accountId === "string" && params.accountId.trim() ? params.accountId.trim() : undefined;
+          const messageThreadId = Number.isFinite(Number(params?.messageThreadId)) ? Number(params.messageThreadId) : undefined;
+
           const job: RalphJob = {
             version: 1,
             jobId,
@@ -559,7 +573,10 @@ export default function register(api: OpenClawPluginApi) {
             repoPath,
             tool,
             maxIterations: finalMax,
-            channel: "agent",
+            channel,
+            to,
+            accountId,
+            messageThreadId,
             status: "queued",
             iteration: 0,
           };
