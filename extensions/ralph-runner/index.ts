@@ -14,7 +14,7 @@ try {
   // 读取失败使用默认版本
 }
 
-type ToolName = "codex" | "claude";
+type ToolName = "codex" | "claude" | "cursor";
 
 type JobStatus = "queued" | "running" | "completed" | "failed" | "canceled";
 
@@ -307,9 +307,14 @@ async function runOneStory(api: OpenClawPluginApi, job: RalphJob, logger: any) {
   }
 
   const ralphDir = path.join(repoRoot, "scripts", "ralph");
-  const promptPath = path.join(ralphDir, job.tool === "codex" ? "CODEX.md" : "CLAUDE.md");
+  const promptPathMap: Record<ToolName, string> = {
+    codex: "CODEX.md",
+    claude: "CLAUDE.md",
+    cursor: "CURSOR.md",
+  };
+  const promptPath = path.join(ralphDir, promptPathMap[job.tool]);
   if (!fs.existsSync(promptPath)) {
-    throw new Error(`缺少提示模板：${promptPath}。请通过 proj 初始化拷贝 CODEX.md/CLAUDE.md 到 scripts/ralph/`);
+    throw new Error(`缺少提示模板：${promptPath}。请通过 proj 初始化拷贝 CODEX.md/CLAUDE.md/CURSOR.md 到 scripts/ralph/`);
   }
   const promptInput = fs.readFileSync(promptPath, "utf8");
 
@@ -323,6 +328,17 @@ async function runOneStory(api: OpenClawPluginApi, job: RalphJob, logger: any) {
     const codexCmd = process.env.RALPH_CODEX_CMD?.trim() || "codex exec --full-auto";
     const res: any = await run(["sh", "-lc", codexCmd], api, { timeoutSec, cwd: repoRoot, input: promptInput });
     toolOutput = `${res?.stdout ?? ""}\n${res?.stderr ?? ""}`;
+  } else if (job.tool === "cursor") {
+    const cursorCmd = process.env.RALPH_CURSOR_CMD?.trim() || "agent -p";
+    const tmpPrompt = path.join(ralphDir, ".cursor-prompt.tmp");
+    fs.writeFileSync(tmpPrompt, promptInput, "utf8");
+    const res: any = await run(
+      ["sh", "-lc", `cat "${tmpPrompt}" | ${cursorCmd}`],
+      api,
+      { timeoutSec, cwd: repoRoot }
+    );
+    toolOutput = `${res?.stdout ?? ""}\n${res?.stderr ?? ""}`;
+    try { fs.unlinkSync(tmpPrompt); } catch {}
   } else {
     const res: any = await run(["claude", "--dangerously-skip-permissions", "--print"], api, {
       timeoutSec,
@@ -520,7 +536,7 @@ export default function register(api: OpenClawPluginApi) {
       properties: {
         action: { type: "string", enum: ["run", "list", "cancel"] },
         repoPath: { type: "string", description: "Repository path (required for action=run)" },
-        tool: { type: "string", enum: ["codex", "claude"], description: "Tool for action=run" },
+        tool: { type: "string", enum: ["codex", "claude", "cursor"], description: "Tool for action=run" },
         maxIterations: { type: "number", description: "Max iterations for action=run" },
         jobId: { type: "string", description: "Job ID for action=cancel" },
         channel: { type: "string", description: "回传消息的渠道（如 telegram）" },
@@ -568,8 +584,8 @@ export default function register(api: OpenClawPluginApi) {
           const tool = (String(params?.tool ?? "") as ToolName) || ((api.pluginConfig?.defaultTool as ToolName) ?? "codex");
 
           if (!repoPath) return toResult({ success: false, message: "缺少参数：repoPath" });
-          if (tool !== "codex" && tool !== "claude") {
-            return toResult({ success: false, message: `tool 必须是 codex 或 claude，当前=${String(tool)}` });
+          if (tool !== "codex" && tool !== "claude" && tool !== "cursor") {
+            return toResult({ success: false, message: `tool 必须是 codex、claude 或 cursor，当前=${String(tool)}` });
           }
           if (runningCount() >= MAX_CONCURRENCY) {
             return toResult({ success: false, message: `任务达上限：当前并发上限=${MAX_CONCURRENCY}` });
@@ -688,8 +704,8 @@ export default function register(api: OpenClawPluginApi) {
         }
 
         const tool = (kv.tool as ToolName) || ((api.pluginConfig?.defaultTool as ToolName) ?? "codex");
-        if (tool !== "codex" && tool !== "claude") {
-          return { text: `tool 必须是 codex 或 claude，当前=${String(tool)}` };
+        if (tool !== "codex" && tool !== "claude" && tool !== "cursor") {
+          return { text: `tool 必须是 codex、claude 或 cursor，当前=${String(tool)}` };
         }
 
         const state = computeStoryState(repoPath, logger);

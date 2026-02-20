@@ -6,7 +6,7 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "defaultTool": { "type": "string", "enum": ["codex", "claude"], "default": "codex" },
+      "defaultTool": { "type": "string", "enum": ["codex", "claude", "cursor"], "default": "codex" },
       "maxIterationsDefault": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 },
       "iterationTimeoutSec": { "type": "integer", "minimum": 60, "maximum": 7200, "default": 1800 }
     }
