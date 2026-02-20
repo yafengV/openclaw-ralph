@@ -516,17 +516,23 @@ export default function register(api: OpenClawPluginApi) {
         try {
           logger.info(`[ralph-runner] 工具调用：${toolName}`, { input });
 
+          // 严格的输入验证
+          if (!input || typeof input !== "object") {
+            logger.error(`[ralph-runner] 无效的输入：${toolName}, input=`, input);
+            return { success: false, message: `无效的输入：input 必须是对象` };
+          }
+
           if (toolName === "ralph_run") {
             const repoPath = input.repoPath ? String(input.repoPath) : "";
             const tool = (input.tool as ToolName) || ((api.pluginConfig?.defaultTool as ToolName) ?? "codex");
 
             if (!repoPath) {
-              logger.error(`[ralph-runner] 缺少参数：repoPath`);
+              logger.error(`[ralph-runner] 缺少参数：repoPath`, { input });
               return { success: false, message: "缺少参数：repoPath" };
             }
 
             if (tool !== "codex" && tool !== "claude") {
-              logger.error(`[ralph-runner] 无效的 tool：${tool}`);
+              logger.error(`[ralph-runner] 无效的 tool：${tool}`, { input });
               return { success: false, message: `tool 必须是 codex 或 claude，当前=${String(tool)}` };
             }
 
@@ -606,12 +612,17 @@ export default function register(api: OpenClawPluginApi) {
           }
 
           if (toolName === "ralph_cancel") {
-            const argsStr = typeof input === "object" && input.jobId ? String(input.jobId).trim() : "";
-            const jobId = argsStr;
-            if (!jobId) {
-              logger.error(`[ralph-runner] 取消任务失败：缺少 jobId`);
+            if (!input.jobId) {
+              logger.error(`[ralph-runner] 取消任务失败：缺少 jobId`, { input });
               return { success: false, message: "缺少 jobId" };
             }
+
+            const jobId = String(input.jobId).trim();
+            if (!jobId) {
+              logger.error(`[ralph-runner] 取消任务失败：jobId 为空`, { input });
+              return { success: false, message: "jobId 不能为空" };
+            }
+
             if (!jobs.has(jobId)) {
               logger.error(`[ralph-runner] 取消任务失败：未找到 ${jobId}`);
               return { success: false, message: `未找到 job：${jobId}` };
@@ -645,7 +656,12 @@ export default function register(api: OpenClawPluginApi) {
       try {
         logger.info(`[ralph-runner] 命令调用：ralphrun`, { args: ctx.args });
 
-        const kv = parseKvArgs(ctx.args ?? "");
+        if (!ctx.args || typeof ctx.args !== "string") {
+          logger.error(`[ralph-runner] 无效的命令参数`, { args: ctx.args });
+          return { text: "缺少参数。示例：/ralphrun repoPath=/path/to/repo tool=codex maxIterations=10" };
+        }
+
+        const kv = parseKvArgs(ctx.args);
         const repoPath = kv.repoPath || kv.repo || "";
         if (!repoPath) {
           return { text: "缺少参数：repoPath。示例：/ralphrun repoPath=/path/to/repo tool=codex maxIterations=10" };
@@ -745,9 +761,13 @@ export default function register(api: OpenClawPluginApi) {
       try {
         logger.info(`[ralph-runner] 命令调用：ralphcancel`, { args: ctx.args });
 
-        const argsStr = typeof ctx.args === "string" ? ctx.args : "";
-        const kv = parseKvArgs(argsStr);
-        const jobId = kv.jobId || kv.id || (argsStr && argsStr.trim());
+        if (!ctx.args || typeof ctx.args !== "string") {
+          logger.error(`[ralph-runner] 无效的命令参数`, { args: ctx.args });
+          return { text: "缺少 jobId。示例：/ralphcancel jobId=ralph_xxx" };
+        }
+
+        const kv = parseKvArgs(ctx.args);
+        const jobId = kv.jobId || kv.id || ctx.args.trim();
         if (!jobId) return { text: "缺少 jobId。示例：/ralphcancel jobId=ralph_xxx" };
         if (!jobs.has(jobId)) return { text: `未找到 job：${jobId}` };
         cancels.add(jobId);
